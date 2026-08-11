@@ -14,19 +14,35 @@ Java 21 and Docker are required. Quarkus 3.13 does not support JDK 25.
 
 ```sh
 docker compose up -d                 # PostgreSQL on 15432
-cd java-assignment && ./mvnw verify  # 68 tests + 2 integration tests
+cd java-assignment && ./mvnw verify  # 69 tests + 2 integration tests
 ```
 
 `./mvnw quarkus:dev` then serves the API on `http://localhost:8080`.
 
-Dev Services is deliberately off — [ADR-0010](docs/adr/0010-real-postgresql-instead-of-dev-services.md)
-records the measured reason. The port and credentials are the ones the provided
-`java-assignment/README.md` already documents.
+**What the database requirement actually is.** Dev Services and Testcontainers are deliberately
+off — [ADR-0010](docs/adr/0010-real-postgresql-instead-of-dev-services.md) records the measured
+reason — so nothing here starts a container for you. What the tests need is *a PostgreSQL listening
+on **15432** with the user, password and database all `quarkus_test`*. `docker-compose.yml` is the
+convenient way to get one; a locally installed PostgreSQL on that port works identically. Docker is
+the convenience, not the dependency. The port and credentials are not chosen here — they are the
+ones the provided `java-assignment/README.md` already documents, which is also why the packaged-app
+integration test needs no configuration of its own.
 
-Mutation coverage:
+**If you skip `docker compose up -d`**, the build fails with a connection refusal rather than
+anything mysterious:
+
+```
+Connection to localhost:15432 refused. Check that the hostname and port are correct
+and that the postmaster is accepting TCP/IP connections.
+```
+
+**What runs with no database at all.** The domain tests and the whole mutation profile need
+nothing running — which is why the CI mutation job has no service container:
 
 ```sh
-cd java-assignment && ./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
+cd java-assignment
+./mvnw test -Dtest='*UseCaseTest,LocationGatewayTest'   # 30 tests, no database
+./mvnw -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
 ```
 
 ## What was built
@@ -90,9 +106,17 @@ maximum capacity. That is [grandfathered, not edited away](docs/adr/0001-grandfa
 | Packaged application | `@QuarkusIntegrationTest` |
 | Rule strength | PIT mutation testing, domain-scoped |
 
-Mutation testing scored the green domain suite at **84%**, and every one of the 7 survivors was a
-real gap. After triage: **44 mutants, 44 killed**, with line coverage unchanged at 99% throughout.
+Mutation testing covers **44 mutants across the four rule-bearing domain classes** —
+`CreateWarehouseUseCase`, `ReplaceWarehouseUseCase`, `ArchiveWarehouseUseCase`, `LocationGateway`.
+Adapters, entities and container-driven tests are excluded
+[per ADR-0007](docs/adr/0007-mutation-testing-scoped-to-the-domain.md). It scored the green suite at
+**84%**, and every one of the 7 survivors was a real gap; after triage, **44 killed**, with line
+coverage unchanged at 99% throughout.
 [What it caught](docs/AI_COLLABORATION.md#what-mutation-testing-caught-that-a-green-build-did-not).
+
+That score describes the rule layer, not the application. The fulfilment limits are outside it —
+`FulfilmentService` needs a container to test — and were verified instead by a one-off manual
+mutation: flipping each `>=` to `>` and confirming exactly the three boundary tests failed.
 
 ## Decisions
 

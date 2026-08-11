@@ -23,12 +23,36 @@ body, but nothing enforced it: `hibernate-validator` appeared in the dependency 
 - **Replacing the generator with `openapi-generator-maven-plugin` was recommended and rejected.** It
   would leave the Quarkus codegen lifecycle and unpin the version from the platform.
 - **`x-codegen-annotations` was asserted as the mechanism for field constraints without being run.**
-  Challenged rather than accepted, then tested: property-level annotations are silently ignored, and
-  schema-level ones are applied to the class, where they are inert for fields. Seven configurations
-  across two extension versions produced field constraints in none of them, and `@Valid` is never
-  generated at all. Extension 2.9.0 additionally fails to compile here, because it emits MicroProfile
-  OpenAPI annotations and `quarkus-smallrye-openapi` is not a dependency — so "revisit after a
-  version bump" would have been inaccurate advice.
+  Challenged rather than accepted, then tested during design: property-level annotations are silently
+  ignored, and schema-level ones are applied to the class, where they are inert for fields. Extension
+  2.9.0 additionally fails to compile here, because it emits MicroProfile OpenAPI annotations and
+  `quarkus-smallrye-openapi` is not a dependency — so a *small* extension bump does not reach the
+  capability. (See the version finding below: a much later line does, which makes "revisit after a
+  version bump" the right instinct pointed at the wrong release.)
+
+**Re-verified during implementation**, because a claim inherited from a design document is not
+evidence. `use-bean-validation=true` was set three ways — in `application.properties`, as `-D`, and
+under the `.server.` prefix — each followed by `./mvnw clean compile`. All three produce generated
+sources **byte-identical** to the run without it, confirmed by `diff`, with no warning about an
+unrecognised property. The bean carries no `jakarta.validation` import under any of them. The
+interface does carry `@NotNull` on the request-body parameter, from `required: true` in the
+contract, with or without the flag — and never `@Valid`, so nothing would cascade into field
+constraints even if they appeared.
+
+## Why the flag does nothing here
+
+A version finding, taken from the extension's release history rather than measured in this
+repository — what was measured is the byte-identical output above.
+
+Apicurio-based bean validation was added to the extension in **apicurio-codegen 1.2.5.Final**, in
+the release line aligned with **Quarkus 3.24/3.25**. This project is pinned to **Quarkus 3.13**, so
+the property has no implementation to reach — which is why setting it produces byte-identical
+generated sources and no unrecognised-property warning. Upgrading the extension to obtain field
+constraints was **out of scope for this exercise**: the pinned platform version is part of the given
+code, and nothing here was upgraded to test the hypothesis.
+
+So the capability is real, and it is simply not present in this version. The flag was neither
+misspelled nor misplaced, which is why no amount of reconfiguring it would have helped.
 
 ## Consequences
 
@@ -39,3 +63,8 @@ body, but nothing enforced it: `hibernate-validator` appeared in the dependency 
   documentation masquerading as enforcement.
 - Quarkus emits its own `ViolationReport` shape for validation failures, so a mapper for
   `ResteasyReactiveViolationException` restores the house error shape.
+- **This decision has an expiry date.** On the Quarkus 3.24/3.25 line the generator can emit field
+  constraints, so point 4 above — no `minLength`/`maxLength` in the YAML — should be revisited
+  whenever this project's platform version is raised, rather than treated as permanent. Point 3,
+  keeping field rules beside the business rules they are inseparable from, stands on its own merits
+  and would not automatically be reversed by the upgrade.

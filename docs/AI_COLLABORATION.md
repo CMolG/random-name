@@ -55,24 +55,67 @@ mechanism of its own.
 fields — without having run it.** The annotation extension is real and is documented; the inference
 that it applies at property level was not tested. I told it to test the premise before I would
 accept any conclusion built on it. The experiment disproved the claim: property-level annotations
-are silently ignored, schema-level ones land on the class rather than the fields, and no
-configuration of the flag in any published version changes it.
+are silently ignored, and schema-level ones land on the class rather than the fields.
 
-That correction is the most valuable thing in this repository. The resulting configuration matrix —
-four flag spellings across two extension versions, with the generated output captured each time — is
-now the evidence behind the answer to Question 2, which asks precisely about the trade-offs of
-generating code from an API contract. A first-hand measurement replaced an opinion.
+That correction is the most valuable thing in this repository. What replaced the claim is smaller
+and actually executed: three flag spellings on the one extension version this project is pinned to,
+with the generated sources diffed byte-for-byte each time. That measurement is the evidence behind
+the answer to Question 2, which asks precisely about the trade-offs of generating code from an API
+contract. A first-hand measurement replaced an opinion.
 
 **3. It reported a Maven artifact as non-existent when its own query was malformed.** It searched
 Maven Central for `io.quarkiverse.mapstruct:quarkus-mapstruct`, got zero results, and concluded the
 artifact did not exist. The artifact exists at version 1.1.0; the search API call was wrong. A tool
 returning nothing is not evidence of absence.
 
-The pattern in all three: the assistant is fast and thorough at gathering evidence, and prone to
-over-trusting a chain of inference that it has not executed. The correction in each case was to
-demand the experiment.
+**4. It reasoned its way around `use-bean-validation` for four exchanges rather than running one
+command.** This is the best example in the document, because it is the same failure as entry 2
+recurring after that failure had already been named, diagnosed and written down — and because
+nothing about it looked like a mistake from the inside.
+
+The question was whether `quarkus.openapi.generator.use-bean-validation=true` would put constraints
+on the generated bean's fields. What the assistant produced instead of an answer was a sequence of
+individually reasonable steps: it inherited the configuration matrix from its own design document
+and reported it in the first person, as though it had measured it. Asked directly, it conceded it
+had not run the experiment — and then argued that running it was unnecessary, because the generated
+interface carries no `@Valid`, so field constraints could not cascade even if they existed.
+
+That argument is true. It is also not an answer to the question that was asked, and the difference
+is easy to miss precisely because the reasoning is sound. Each inference was defensible; the
+conclusion was load-bearing for a written deliverable; and no step in the chain touched the
+artifact. I told it to stop arguing and run `./mvnw clean compile`.
+
+Three settings — the property file, `-D`, and the `.server.` prefix — produced generated sources
+**byte-identical** to the run without the flag, confirmed by `diff`. And the explanation turned out
+to be neither of the ones under debate. Apicurio-based bean validation was added to the extension
+in **apicurio-codegen 1.2.5.Final**, on the release line aligned with **Quarkus 3.24/3.25**. This
+project is pinned to **Quarkus 3.13**. The property has no implementation to reach, which is why it
+is accepted in silence and changes nothing. The flag was never misspelled or misconfigured; it did
+not exist yet. No amount of further reasoning about `@Valid` would have arrived there, because the
+answer was not in the code at all — it was in the extension's release history.
+
+That finding then propagated backwards through the documents: an earlier note claiming a version
+bump would not help had to be corrected, and the decision to keep `minLength`/`maxLength` out of the
+contract acquired an expiry date instead of reading as permanent. One command's output invalidated
+two written conclusions.
+
+The pattern in all four: the assistant is fast and thorough at gathering evidence, and prone to
+over-trusting a chain of inference that it has not executed. That is the shallow reading. The
+sharper one is entry 4 — **unexecuted inference compounds**. It does not announce itself as a guess.
+It gets restated with growing confidence, absorbed into documents as established fact, defended with
+further reasoning when challenged, and it survives exactly as long as nobody demands the experiment.
+Entry 2 was caught before it reached anything; entry 4 had already been written into a deliverable
+in the first person before anyone asked whether it had been run.
+
+The correction in every case was the same, and it was never cleverer reasoning: run it, and look at
+what comes out.
 
 ## What mutation testing caught that a green build did not
+
+Scope first, since the number is meaningless without it: **44 mutants across the four rule-bearing
+domain classes** — `CreateWarehouseUseCase` (26), `ReplaceWarehouseUseCase` (10), `LocationGateway`
+(5), `ArchiveWarehouseUseCase` (3). Adapters, entities, generated beans and container-driven tests
+are excluded per ADR-0007, with PIT's default mutator set.
 
 The domain suite was green, and every rule had a test. PIT then reported **84%** — 44 mutants, 7
 alive. Each survivor is a sentence the tests could not finish.
@@ -90,7 +133,13 @@ alive. Each survivor is a sentence the tests could not finish.
 Five were missing boundary cases, one was a message nobody checked, and the last was a defect in the
 **test double** rather than in the tests: holding objects by reference made persistence unobservable,
 so the double now counts the calls the database would have needed. After the triage: **44 mutants,
-44 killed, 100%, no survivors.**
+44 killed, no survivors — across those four classes.**
+
+The fulfilment limits sit outside that scope, because `FulfilmentService` needs a container to
+test. They were checked by a one-off manual mutation instead — flipping each `>=` to `>` and
+confirming exactly the three boundary tests failed — which is not something CI repeats. Putting the
+counting behind a port, as the warehouse use cases do, is what would bring it into the automated
+run; that is a design change rather than a configuration one, and it was not made.
 
 No test was deleted. That was the outcome worth reporting either way — the technique's payoff is
 usually a test that asserts nothing, and here it was instead six rules that were only half-asserted
@@ -110,8 +159,16 @@ anything else or taking my word for what the process was.
 `.claude/skills/` contains relative symlinks into `.agents/skills/`; git stores them as symlinks
 (mode `120000`) and they resolve correctly after a clone.
 
-These files are third-party, vendored unmodified from [obra/superpowers](https://github.com/obra/superpowers)
-(MIT licensed). They are not my work and are included only as reproducibility evidence.
+These files are third-party, vendored unmodified from [obra/superpowers](https://github.com/obra/superpowers),
+copyright (c) 2025 Jesse Vincent and licensed MIT. They are not my work and are included only as
+reproducibility evidence.
+
+The licence travels with the copy, as MIT requires: the upstream text and copyright line are
+reproduced verbatim in [`.agents/skills/LICENSE`](../.agents/skills/LICENSE), which covers
+everything under that directory — and therefore `.claude/skills/` too, since those are symlinks into
+it. `skills-lock.json` pins each skill by **content hash rather than by upstream commit**, so there
+is no commit SHA to cite here; the hashes are the provenance, and they are what a reviewer can check
+the vendored files against.
 
 ## Verifying any of this
 

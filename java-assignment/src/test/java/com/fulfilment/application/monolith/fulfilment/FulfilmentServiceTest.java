@@ -12,7 +12,7 @@ import com.fulfilment.application.monolith.products.ProductRepository;
 import com.fulfilment.application.monolith.stores.Store;
 import com.fulfilment.application.monolith.warehouses.adapters.database.DbWarehouse;
 import com.fulfilment.application.monolith.warehouses.adapters.database.WarehouseRepository;
-import io.quarkus.narayana.jta.QuarkusTransaction;
+import io.quarkus.test.TestTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.LocalDateTime;
@@ -24,10 +24,18 @@ import org.junit.jupiter.api.Test;
  * still pass if the limit were off by one.
  *
  * <p>Fixtures are persisted directly rather than created through the warehouse use case. The
- * location rules are not what is under test here, and routing fixtures through them would couple
- * these tests to how much capacity the other test classes happen to have consumed.
+ * location rules are not what is under test here, and routing fixtures through them would make
+ * these tests fail for reasons that have nothing to do with fulfilment.
+ *
+ * <p>{@code @TestTransaction} rolls every test back, so nothing here reaches the shared database
+ * that the rest of the suite runs against. That works because these tests call the service directly:
+ * the service's {@code @Transactional} joins the test's transaction. It would <b>not</b> work for a
+ * test driving the API over HTTP — measured — because the server handles the request in a
+ * transaction of its own, which commits regardless. Those tests clean up with {@link TestFixtures}
+ * instead.
  */
 @QuarkusTest
+@TestTransaction
 public class FulfilmentServiceTest {
 
   @Inject FulfilmentService fulfilmentService;
@@ -37,25 +45,17 @@ public class FulfilmentServiceTest {
   @Inject WarehouseRepository warehouses;
 
   private static Long givenStore(String name) {
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              var store = new Store(name);
-              store.quantityProductsInStock = 1;
-              store.persist();
-              return store.id;
-            });
+    var store = new Store(name);
+    store.quantityProductsInStock = 1;
+    store.persist();
+    return store.id;
   }
 
   private Long givenProduct(String name) {
-    return QuarkusTransaction.requiringNew()
-        .call(
-            () -> {
-              var product = new Product(name);
-              product.stock = 1;
-              products.persist(product);
-              return product.id;
-            });
+    var product = new Product(name);
+    product.stock = 1;
+    products.persist(product);
+    return product.id;
   }
 
   private String givenWarehouse(String businessUnitCode) {
@@ -63,20 +63,14 @@ public class FulfilmentServiceTest {
   }
 
   private String givenWarehouse(String businessUnitCode, LocalDateTime archivedAt) {
-    QuarkusTransaction.requiringNew()
-        .run(
-            () -> {
-              var warehouse = new DbWarehouse();
-              warehouse.businessUnitCode = businessUnitCode;
-              // VETSBY-001 is reserved for these fixtures: they are persisted directly and would
-              // otherwise consume the location capacity the warehouse API tests create against
-              warehouse.location = "VETSBY-001";
-              warehouse.capacity = 10;
-              warehouse.stock = 1;
-              warehouse.createdAt = LocalDateTime.now();
-              warehouse.archivedAt = archivedAt;
-              warehouses.persist(warehouse);
-            });
+    var warehouse = new DbWarehouse();
+    warehouse.businessUnitCode = businessUnitCode;
+    warehouse.location = "AMSTERDAM-001";
+    warehouse.capacity = 10;
+    warehouse.stock = 1;
+    warehouse.createdAt = LocalDateTime.now();
+    warehouse.archivedAt = archivedAt;
+    warehouses.persist(warehouse);
     return businessUnitCode;
   }
 
