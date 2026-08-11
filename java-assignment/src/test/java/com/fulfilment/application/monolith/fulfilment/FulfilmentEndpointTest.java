@@ -4,6 +4,7 @@ import static io.restassured.RestAssured.given;
 import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.notNullValue;
 
+import com.fulfilment.application.monolith.TestFixtures;
 import com.fulfilment.application.monolith.products.Product;
 import com.fulfilment.application.monolith.products.ProductRepository;
 import com.fulfilment.application.monolith.stores.Store;
@@ -13,14 +14,27 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import java.time.LocalDateTime;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-/** The fulfilment endpoints, including that the service's failures reach the client as HTTP. */
+/**
+ * The fulfilment endpoints, including that the service's failures reach the client as HTTP.
+ *
+ * <p>These drive the API over HTTP, so {@code @TestTransaction} cannot roll them back — the server
+ * commits in a transaction of its own. Fixtures are removed on the way in instead; see
+ * {@link TestFixtures}. Every fixture here uses the {@code FE} prefix so that cleanup finds it.
+ */
 @QuarkusTest
 public class FulfilmentEndpointTest {
 
   @Inject ProductRepository products;
   @Inject WarehouseRepository warehouses;
+  @Inject FulfilmentAssociationRepository associations;
+
+  @BeforeEach
+  void removeFixturesLeftByAnyEarlierTest() {
+    TestFixtures.clean(associations, warehouses, products);
+  }
 
   private static Long givenStore(String name) {
     return QuarkusTransaction.requiringNew()
@@ -50,9 +64,7 @@ public class FulfilmentEndpointTest {
             () -> {
               var warehouse = new DbWarehouse();
               warehouse.businessUnitCode = businessUnitCode;
-              // VETSBY-001 is reserved for these fixtures: they are persisted directly and would
-              // otherwise consume the location capacity the warehouse API tests create against
-              warehouse.location = "VETSBY-001";
+              warehouse.location = "AMSTERDAM-001";
               warehouse.capacity = 10;
               warehouse.stock = 1;
               warehouse.createdAt = LocalDateTime.now();
@@ -73,9 +85,9 @@ public class FulfilmentEndpointTest {
 
   @Test
   void associatingReturnsTwoHundredAndOneAndThenAppearsInTheStoreListing() {
-    Long store = givenStore("E1-STORE");
-    Long product = givenProduct("E1-PRODUCT");
-    String warehouse = givenWarehouse("E1.W1");
+    Long store = givenStore("FE1-STORE");
+    Long product = givenProduct("FE1-PRODUCT");
+    String warehouse = givenWarehouse("FE1.W1");
 
     given()
         .contentType("application/json")
@@ -86,7 +98,7 @@ public class FulfilmentEndpointTest {
         .statusCode(201)
         .body("id", notNullValue())
         .body("warehouseBusinessUnitCode", equalTo(warehouse))
-        .body("storeName", equalTo("E1-STORE"));
+        .body("storeName", equalTo("FE1-STORE"));
 
     given()
         .when()
@@ -94,13 +106,13 @@ public class FulfilmentEndpointTest {
         .then()
         .statusCode(200)
         .body("size()", equalTo(1))
-        .body("[0].productName", equalTo("E1-PRODUCT"));
+        .body("[0].productName", equalTo("FE1-PRODUCT"));
   }
 
   @Test
   void anUnknownWarehouseIsFourHundredAndFour() {
-    Long store = givenStore("E2-STORE");
-    Long product = givenProduct("E2-PRODUCT");
+    Long store = givenStore("FE2-STORE");
+    Long product = givenProduct("FE2-PRODUCT");
 
     given()
         .contentType("application/json")
@@ -113,9 +125,9 @@ public class FulfilmentEndpointTest {
 
   @Test
   void aDuplicateAssociationIsFourHundredAndNine() {
-    Long store = givenStore("E3-STORE");
-    Long product = givenProduct("E3-PRODUCT");
-    String warehouse = givenWarehouse("E3.W1");
+    Long store = givenStore("FE3-STORE");
+    Long product = givenProduct("FE3-PRODUCT");
+    String warehouse = givenWarehouse("FE3.W1");
 
     given()
         .contentType("application/json")
@@ -136,13 +148,13 @@ public class FulfilmentEndpointTest {
 
   @Test
   void exceedingALimitIsFourHundred() {
-    Long store = givenStore("E4-STORE");
-    Long product = givenProduct("E4-PRODUCT");
+    Long store = givenStore("FE4-STORE");
+    Long product = givenProduct("FE4-PRODUCT");
 
     for (int i = 1; i <= 2; i++) {
       given()
           .contentType("application/json")
-          .body(body(store, product, givenWarehouse("E4.W" + i)))
+          .body(body(store, product, givenWarehouse("FE4.W" + i)))
           .when()
           .post("fulfilment")
           .then()
@@ -151,7 +163,7 @@ public class FulfilmentEndpointTest {
 
     given()
         .contentType("application/json")
-        .body(body(store, product, givenWarehouse("E4.W3")))
+        .body(body(store, product, givenWarehouse("FE4.W3")))
         .when()
         .post("fulfilment")
         .then()
@@ -160,9 +172,9 @@ public class FulfilmentEndpointTest {
 
   @Test
   void anAssociationCanBeRemoved() {
-    Long store = givenStore("E5-STORE");
-    Long product = givenProduct("E5-PRODUCT");
-    String warehouse = givenWarehouse("E5.W1");
+    Long store = givenStore("FE5-STORE");
+    Long product = givenProduct("FE5-PRODUCT");
+    String warehouse = givenWarehouse("FE5.W1");
 
     Integer id =
         given()

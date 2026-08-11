@@ -6,7 +6,13 @@ import static org.hamcrest.CoreMatchers.equalTo;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.core.IsNot.not;
 
+import com.fulfilment.application.monolith.TestFixtures;
+import com.fulfilment.application.monolith.fulfilment.FulfilmentAssociationRepository;
+import com.fulfilment.application.monolith.products.ProductRepository;
+import com.fulfilment.application.monolith.warehouses.adapters.database.WarehouseRepository;
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.inject.Inject;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -15,11 +21,25 @@ import org.junit.jupiter.api.Test;
  * <p>Every test that mutates state creates the warehouse it then acts on, rather than reaching for
  * a seeded row: the seeds are shared with the other tests in this module and with the integration
  * test, and asserting on them couples unrelated tests together.
+ *
+ * <p>Creating a warehouse consumes its location's capacity, and the whole suite shares one database,
+ * so fixtures left behind by any test — here or in another class — change what this one is allowed
+ * to create. They are removed on the way in; see {@link TestFixtures}. Every warehouse created here
+ * uses the {@code MWH.2} prefix so that cleanup finds it and the seeds survive.
  */
 @QuarkusTest
 public class WarehouseEndpointTest {
 
   private static final String PATH = "warehouse";
+
+  @Inject FulfilmentAssociationRepository associations;
+  @Inject WarehouseRepository warehouses;
+  @Inject ProductRepository products;
+
+  @BeforeEach
+  void removeFixturesLeftByAnyEarlierTest() {
+    TestFixtures.clean(associations, warehouses, products);
+  }
 
   private static String createWarehouse(String buCode, String location, int capacity, int stock) {
     return given()
