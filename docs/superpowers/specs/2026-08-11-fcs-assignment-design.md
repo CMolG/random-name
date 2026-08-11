@@ -54,13 +54,17 @@ incomplete", so finding them is part of the task.
 1. **`StoreResource.update` / `patch` sync the wrong object.** Both pass `updatedStore` — the
    deserialised request body, whose `id` is `null` — to `LegacyStoreManagerGateway` instead of the
    persisted `entity`. The legacy system receives an unidentifiable record.
-2. **`StoreResource.patch` tests the wrong side.** It guards with `entity.name != null` and
-   `entity.quantityProductsInStock != 0` when it means to test the *incoming* values. As written it
-   can never null-out or zero a field, and it applies changes it was asked not to.
+2. **`StoreResource.patch` corrupts stock, and cannot set it.** `Store.quantityProductsInStock` is
+   a primitive `int`, so an omitted field deserialises to `0` — indistinguishable from an explicit
+   zero. The guard reads `entity.quantityProductsInStock != 0`, i.e. the *stored* value rather than
+   the incoming one. Actual behaviour: when the stored quantity is non-zero, a PATCH that omits the
+   field **wipes it to 0**; when the stored quantity is 0, the incoming value is **ignored and can
+   never be set**. The `entity.name != null` guard is wrong the same way, though harmless in
+   practice since a loaded entity always has a name.
 3. **`patch` rejects a null name with 422**, which contradicts PATCH semantics — a partial update
    is precisely a request that omits fields.
-4. **`StoreResource.delete` never notifies the legacy system**, leaving it holding stores that no
-   longer exist here.
+4. **`StoreResource.delete` never notifies the legacy system**, leaving an orphan record in the
+   legacy register. See §6 — this is recorded as a scope decision, not fixed.
 5. **`pom.xml` sets conflicting compiler levels** — `maven.compiler.release=17` alongside
    `<source>11</source><target>11</target>` on `maven-compiler-plugin`. The build currently
    succeeds on `release 17`, but the contradiction is latent.
@@ -74,6 +78,15 @@ incomplete", so finding them is part of the task.
    classpath transitively, so `@NotNull` compiles — but `hibernate-validator` appears in the
    dependency tree only as `quarkus-hibernate-validator-spi:test`. There is no validation engine at
    runtime, so the contract's `required: true` is currently unenforced.
+10. **`WarehouseResourceImpl` re-declares `@NotNull` on overriding parameters** (lines 22 and 41).
+    Jakarta Validation forbids declaring parameter constraints on an overriding method, so this
+    becomes a `ConstraintDeclarationException` the moment a validation engine exists. A
+    codebase-wide grep confirms these are the **only** two parameter constraints present, both in a
+    class this work rewrites — so the hazard is contained, but it must be known before adding
+    `quarkus-hibernate-validator`.
+11. **`WarehouseEndpointIT` never executes.** `maven-failsafe-plugin` is declared only inside the
+    `native` profile, and Surefire's default includes do not match `*IT`. `./mvnw verify` therefore
+    passes **without ever running** the one test that exercises the packaged application.
 
 ### 2.3 The seed data contradicts the rules
 
@@ -146,17 +159,25 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 
 ### Operation semantics
 
-- **Create** — validate, persist, return **201** via `@ResponseStatus(201)`. The generated interface
-  returns `Warehouse`, not `Response`, so the annotation is the mechanism; a `ContainerResponseFilter`
-  would be a heavier way to reach the same result.
+- **Create** — validate, set `createdAt = now()`, persist, return **201** via `@ResponseStatus(201)`.
+  The generated interface returns `Warehouse`, not `Response`, so the annotation is the mechanism;
+  a `ContainerResponseFilter` would be a heavier way to reach the same result.
 - **Get by id** — numeric id, active only, else **404**.
 - **List** — active only.
 - **Archive** — soft state change, `archivedAt = now()`. Archiving an already-archived or unknown
   warehouse is **404**, not a silent success. Returns **204** (the generated method returns `void`).
-- **Replace** — archive the previous active warehouse for the business unit code and create the
+- **Replace** — archive the previous active warehouse for the business unit code, then create the
   successor with the same code, **in a single transaction**. A partial replace would strand a
   business unit code with no active warehouse, which is exactly the history-integrity failure
   Scenario 5 of the case study asks about.
+
+  **Ordering is load-bearing.** The successor is validated with the full creation rule set
+  (§4 table) evaluated *after* the predecessor is archived. This is the only self-consistent
+  reading: were the predecessor still active, the successor would collide with it on both business
+  unit code uniqueness and the location warehouse count, and no replacement could ever succeed.
+  It is also why replacing `MWH.001` requires a capacity ≤ 40 — once the over-capacity predecessor
+  is archived, the location's used capacity drops to 0 and the successor must fit within
+  `ZWOLLE-001`'s declared 40.
 
 ### Decisions on ambiguities
 
@@ -164,8 +185,11 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 |---|---|---|
 | 1 | Seed data violates capacity rules | Grandfather; validate writes only |
 | 2 | `{id}` — db id or business unit code? | Numeric db id, per the commented-out IT. Requires adding `id` to the domain model and populating it in the response. |
-| 3 | Archive vs delete | Soft archive; archived rows stay queryable but are excluded from all read paths |
-| 4 | `WarehouseStore.remove` | Implemented as archival, not hard delete. It is a leftover from a hard-delete model; adding a `DELETE` nothing calls would be worse than repurposing it honestly. |
+| 3 | Non-numeric `{id}` (contract types it `string`, the column is `Long`) | **404**, not 400. A malformed id is indistinguishable to a client from an id that does not exist, and 404 avoids leaking the storage type. |
+| 4 | Archive vs delete | Soft archive; archived rows stay queryable but are excluded from all read paths |
+| 5 | `WarehouseStore.remove` | Implemented as archival, not hard delete. It is a leftover from a hard-delete model; adding a `DELETE` nothing calls would be worse than repurposing it honestly. |
+| 6 | Which store method does `ArchiveWarehouseUseCase` call? | `update`. The provided skeleton already calls `update`, archival is a field mutation on an existing row, and `remove` is its alias per decision 5. One archival path, not two. |
+| 7 | Who sets `createdAt`? | The create use case, at validation time, inside the transaction. Not the database, so the value is deterministic and assertable in tests. |
 
 ---
 
@@ -175,30 +199,63 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 inside the Quarkus codegen lifecycle and its version is aligned with the platform, which is a more
 solid arrangement than bolting on a standalone Maven plugin.
 
-### How constraints reach the code
+### How constraints reach the code — an empirical finding
 
-`quarkus-openapi-generator-server` wraps **Apicurio** codegen (not `openapi-generator`), and Apicurio
-models are produced by `jsonschema2pojo`, which never emits bean-validation annotations. Apicurio's
-own mechanism is the vendor extension **`x-codegen-annotations`**, confirmed present in
-`apicurio-codegen 1.1.1.Final` (`CodegenExtensions.ANNOTATIONS`, read by
-`OpenApi2CodegenVisitor.visitSchema`) alongside `x-codegen-type`, `x-codegen-extendsClass`,
-`x-codegen-returnType` and others.
+`quarkus-openapi-generator-server` wraps **Apicurio** codegen, not `openapi-generator`, and Apicurio
+models are produced by `jsonschema2pojo`. **Field-level bean validation is not reachable through
+this generator.** This was established by experiment on a scratch copy of the module, not inferred:
 
-So: declare constraints in `warehouse-openapi.yaml` via `x-codegen-annotations`, so `@NotNull`,
-`@Size`, `@Positive` land on the generated bean fields; add **`quarkus-hibernate-validator`** so they
-are actually enforced; add `@Valid` on the interface parameters.
+| Configuration tried | Extension | Annotations on `businessUnitCode` | `@Valid` on request body |
+|---|---|---|---|
+| `required` / `minLength` / `maxLength` / `minimum` in the YAML | 2.4.7 | none — `@JsonProperty` and a `(Required)` javadoc | no |
+| `quarkus.openapi.generator.use-bean-validation=true` | 2.4.7 | none | no |
+| `…server.use-bean-validation` and `…codegen.spec.*.use-bean-validation` | 2.4.7 | none — output byte-identical | no |
+| `quarkus.openapi.generator.server.use=openapitools` | 2.4.7 | none | no |
+| all of the above | **2.9.0** | none | no — **build fails** |
+| property-level `x-codegen-annotations` | 2.4.7 | **silently ignored** | no |
+| schema-level `x-codegen-annotations` | 2.4.7 | applied **class-level** (`@NotNull public class Warehouse`), inert for fields | no |
 
-> **Rejected alternative — and a correction on record.** The first recommendation in this design was
-> to replace the provided generator with `openapi-generator-maven-plugin` for its
-> `useBeanValidation` flag. That was wrong, and was corrected during review: leaving the Quarkus
-> lifecycle to gain a flag that `x-codegen-annotations` already covers trades architectural
-> coherence for nothing. Recorded in ADR-0004.
->
-> A related factual point, verified by extracting the deployment jars of all twenty published
-> versions: `use-bean-validation` exists on the **client** extension
-> (`quarkus-openapi-generator`, which wraps `openapi-generator`) but **not** on the **server**
-> extension, whose entire config surface across 2.4.1 → 2.9.0 is `base-package`, `spec`,
-> `input-base-dir`, `reactive`. Setting it on the server artifact would silently do nothing.
+Three consequences worth recording:
+
+- **The flag does not exist on this artifact.** Unknown build-time codegen properties are ignored
+  without warning, so the misconfiguration is silent. Extracting the deployment jars of all twenty
+  published server versions confirms the entire config surface across 2.4.1 → 2.9.0 is
+  `base-package`, `spec`, `input-base-dir`, `reactive`. `use-bean-validation` belongs to the
+  **client** extension (`quarkus-openapi-generator`), which wraps `openapi-generator`.
+- **`@Valid` is never generated**, so field constraints would be inert even if they appeared. It
+  cannot be added in our implementation either: Jakarta Validation prohibits adding `@Valid` or
+  parameter constraints on an overriding method (see defect 2.2.10).
+- **Upgrading is not free.** Extension 2.9.0 emits MicroProfile OpenAPI annotations and fails to
+  compile with `package org.eclipse.microprofile.openapi.annotations does not exist`, because
+  `quarkus-smallrye-openapi` is not a dependency of this project. "Revisit after a version bump"
+  would be inaccurate advice; the capability lives in a different extension entirely.
+
+`x-codegen-annotations` syntax note, for the record: the annotation string must omit the leading
+`@`, which Apicurio prepends. Including it emits `@@…` and fails to compile.
+
+### Decision
+
+Keep the provided generator and the contract-first approach. Then:
+
+1. Add **`quarkus-hibernate-validator`**. This is not decorative — it gives the generated interface's
+   `@NotNull` on the request body an engine for the first time, which is precisely the fix for
+   defect 2.2.9. Null bodies are then rejected as the contract has always promised.
+2. **Remove the redeclared `@NotNull`** from `WarehouseResourceImpl` (defect 2.2.10). Constraints are
+   inherited from the interface; redeclaring them throws at startup.
+3. **Field-level rules live in the use cases**, alongside the business rules they are inseparable
+   from. A blank business unit code and a duplicate business unit code are the same kind of
+   rejection to a caller; splitting them across two layers would buy nothing.
+4. **No `minLength` / `maxLength` / `x-codegen-annotations` in the YAML.** Constraints that the
+   generator cannot honour would be documentation masquerading as enforcement.
+
+> **Corrections on record.** Two recommendations in earlier drafts of this design were wrong and
+> were corrected during review. First, replacing the provided generator with
+> `openapi-generator-maven-plugin` — rejected for leaving the Quarkus codegen lifecycle. Second,
+> `x-codegen-annotations` as the mechanism for field constraints — proven unworkable by the
+> experiment above, which was run only because the claim was challenged rather than accepted.
+> Both are recorded in ADR-0005 and in `docs/AI_COLLABORATION.md`.
+
+This investigation is itself the substance of the answer to Question 2 (§10).
 
 ### Mapping
 
@@ -217,29 +274,81 @@ Quarkus + Lombok + annotation processors is friction for no gain across four sma
 **400**. A single `ExceptionMapper` translates them, emitting the same JSON error shape the existing
 `ErrorMapper` already produces so the API stays internally consistent.
 
+**409 must be added to `warehouse-openapi.yaml`.** The contract currently declares only 201 and 400
+for `POST /warehouse`, and only 200/400/404 for the replacement path. Returning a status the
+contract does not describe would contradict the claim that the YAML is authoritative. The contract
+changes first, then the code follows it — which is the whole point of working contract-first, and is
+worth stating in the Question 2 answer.
+
 ---
 
 ## 6. Store legacy sync
 
-`StoreChangedEvent` — an immutable record carrying `id`, `name`, `quantityProductsInStock` and a
-`CREATE`/`UPDATE`/`DELETE` discriminator — is fired from inside the `@Transactional` method and
-observed with `@Observes(during = TransactionPhase.AFTER_SUCCESS)`, which invokes
-`LegacyStoreManagerGateway`.
+```java
+public record StoreChangedEvent(Long id, String name, int quantityProductsInStock,
+                                Operation operation) {
+  public enum Operation { CREATED, UPDATED }
+}
+```
 
-**The event carries a snapshot, not the entity.** After commit the persistence context is closed, so
-handing the observer a managed entity invites detached-access failures. Building the snapshot from
-the *persisted* `entity` also fixes defect 2.2.1 by construction — the legacy system finally receives
-a record with an id.
+The event is **constructed inside the transaction, at the call site**, and observed with
+`@Observes(during = TransactionPhase.AFTER_SUCCESS)`, which invokes `LegacyStoreManagerGateway`.
 
-A rollback delivers nothing, which is the entire point of the task and is directly testable with an
-alternative observer that records invocations.
+**The event carries a snapshot, not the entity — and this is the reason for choosing an event over
+a `runAfterCommit` helper.** The obvious alternative,
+`TransactionSynchronizationRegistry.registerInterposedSynchronization` with a lambda closing over
+the Panache entity, reads that entity *after* the transaction has ended, when the persistence
+context is gone. It happens to work here because `Store` has eagerly loaded public fields, but it
+breaks the moment anything is lazy or the entity is mutated after the call site. A snapshot
+guarantees that what reaches the legacy system is what was committed. Building it from the
+*persisted* `entity` also fixes defect 2.2.1 by construction — the legacy system finally receives a
+record with an id.
+
+The event is additionally what makes the post-commit guarantee testable without a real transaction,
+by swapping in a recording observer. That is the concrete artefact the Question 3 answer points at.
+
+**`Operation` has exactly two members.** No `DELETE`: the gateway exposes no delete operation, so a
+discriminator with nothing behind it would be dead code.
+
+A rollback delivers nothing, which is the entire point of the task.
 
 **Known limitation, stated rather than hidden:** `AFTER_SUCCESS` gives *at-most-once* delivery. If
 the legacy write fails after commit, the two systems diverge silently. The production answer is a
-transactional outbox with a retrying publisher; that is deliberately out of scope here and is
-recorded in ADR-0003 instead of built.
+transactional outbox with a retrying publisher; deliberately out of scope, recorded in ADR-0004
+instead of built.
 
-Defects 2.2.2, 2.2.3 and 2.2.4 are fixed as part of this work, since correct propagation is
+### PATCH
+
+The PATCH handler takes `com.fasterxml.jackson.databind.node.ObjectNode` rather than `Store`, and
+applies fields only when `has(...)` reports them present.
+
+The absent-versus-zero problem is a limitation of the deserialised bean, not of the protocol. On the
+raw JSON tree the two are cleanly distinguishable, and this is the only approach that preserves true
+PATCH semantics: a client **can** explicitly send `{"quantityProductsInStock": 0}` and mean it,
+which every "skip if zero" heuristic silently forbids.
+
+`Store.quantityProductsInStock` **stays a primitive `int`**. Boxing a persisted Panache field to
+solve a request-binding problem would leak an API concern into the persistence model and introduce
+a null the column does not want.
+
+Missing name on PATCH stays a 422 only when the key is *present* and blank or null; an omitted name
+is simply not applied. A null or absent body is a 400.
+
+### Scope decision: delete propagation
+
+`LegacyStoreManagerGateway` exposes only `createStoreOnLegacySystem` and `updateStoreOnLegacySystem`.
+It represents a system we do not own, so **it stays byte-identical to the baseline** — inventing a
+`deleteStoreOnLegacySystem` would be fabricating an external contract we have no authority over.
+
+The assignment asks that gateway calls happen *after* the database commit, not that the legacy
+register be complete. Delete propagation is therefore **out of scope**, and the post-commit
+guarantee is applied only to the operations the gateway actually exposes: create, and update
+(including PATCH).
+
+This is documented in `QUESTIONS.md`, where written answers are graded — not in the README, and not
+as an ADR, because it is a scope decision rather than an architectural one.
+
+Defects 2.2.1, 2.2.2 and 2.2.3 are fixed as part of this work, since correct propagation is
 meaningless if the payload or the trigger is wrong.
 
 ---
@@ -257,10 +366,17 @@ meaningless if the payload or the trigger is wrong.
 Endpoints: `POST /fulfilment`, `GET /fulfilment?storeId=`, `DELETE /fulfilment/{id}`. A lean vertical
 slice consistent with the warehouse idiom, without re-deriving the full hexagon for three rules.
 
+**Hand-coded, not contract-first — deliberately, and this is the point.** The bonus is a new API
+whose consumers do not exist yet, added under time pressure. §5 established that the warehouse
+contract is worth generating because it is the published workflow other systems depend on; applying
+the same ceremony to an unproven internal endpoint would be governance without a consumer to govern.
+Building one of each, and being able to say why, is a stronger answer to Question 2 than doing both
+the same way. Documented in ADR-0008.
+
 **Known limitation:** the count-based rules are check-then-act and therefore racy under concurrent
 requests. The unique constraint prevents duplicate triples but not a simultaneous pair of inserts
 that each individually satisfy a count. Serialisable isolation or a locking read would close it.
-Stated in ADR-0006 rather than papered over.
+Stated in ADR-0009 rather than papered over.
 
 ---
 
@@ -271,8 +387,34 @@ TDD on the domain, committed red → green → refactor so the history is itself
 | Layer | Tooling | Covers |
 |---|---|---|
 | Domain unit | plain JUnit 5, no Quarkus, `InMemoryWarehouseStore` + `StaticLocationResolver` fakes | every rule in §4, both happy and violation paths |
-| REST | `@QuarkusTest` + RestAssured | status codes, error shape, validation rejection, post-commit sync ordering |
+| REST | `@QuarkusTest` + RestAssured | status codes, error shape, null-body rejection, post-commit sync ordering |
 | Integration | `@QuarkusIntegrationTest` (`WarehouseEndpointIT`, uncommented) | packaged application against a real database |
+
+### Making the integration test actually run
+
+Per defect 2.2.11, `maven-failsafe-plugin` must be added to the **default** build section, not left
+in the `native` profile. Without it `./mvnw verify` goes green while never executing the IT — a
+false pass on success criterion #2, on the one test that proves the archive-and-exclude behaviour.
+
+Two traps in the commented-out block have to be handled when uncommenting it:
+
+- **Shared database state.** `testSimpleCheckingArchivingWarehouses` archives id 1; if it runs
+  before `testSimpleListWarehouses`, that test's assertion on `MWH.001` fails. The archiving test
+  will therefore create and archive **its own** warehouse rather than mutating seed row 1, so the
+  two tests are order-independent. Ordering annotations would mask the coupling rather than remove
+  it.
+- **Missing import.** The commented block uses `not(...)`; the file imports only `containsString`.
+
+### Named store-side tests
+
+Two cases from §6 are called out because they are the ones a plausible-but-wrong implementation
+passes silently:
+
+- `PATCH {"name":"x"}` against a store with stock 5 leaves stock at **5** (catches the wipe).
+- `PATCH {"quantityProductsInStock":0}` sets stock to **0** (catches every "skip if zero"
+  heuristic — the case that distinguishes a correct implementation from a merely plausible one).
+- A rolled-back transaction produces **zero** gateway invocations; a committed one produces exactly
+  one, carrying a non-null id.
 
 ### Mutation testing
 
@@ -288,6 +430,12 @@ Runs in a `mutation` Maven profile and a separate CI job, so the ordinary build 
 threshold 85%. **Every surviving mutant is triaged**: either the test is strengthened until it kills
 the mutant, or the test is deleted as worthless. Discarding tests that assert nothing is the explicit
 purpose of adopting mutation testing here.
+
+**Droppable under time pressure.** Mutation triage is the largest variable-cost item in a brief
+scoped at roughly four hours. If time runs short the ordering is: keep the domain tests and the
+threshold, drop the triage of low-value survivors, and record the achieved score honestly rather
+than tuning the threshold down to meet it. A real 71% with an explanation is worth more than a
+manufactured 85%.
 
 ---
 
@@ -339,14 +487,36 @@ request, and the issue answered and closed on merge.
 **No JaCoCo.** Mutation score strictly dominates line coverage as a quality signal; publishing both
 invites a reviewer to anchor on the weaker number. One strong metric, defended.
 
+### Decision records
+
+| ADR | Decision |
+|---|---|
+| 0001 | Grandfather the seed data; validate on write only |
+| 0002 | `{id}` is the numeric database id |
+| 0003 | Archive as a soft state change; `WarehouseStore.remove` repurposed as archival |
+| 0004 | Post-commit legacy sync via CDI event carrying an immutable snapshot; at-most-once accepted, outbox out of scope |
+| 0005 | Contract-first retained on the Quarkus/Apicurio generator; field-level bean validation proven unreachable; validation split between the engine and the use cases |
+| 0006 | MapStruct evaluated and rejected on measured line count |
+| 0007 | Mutation testing scoped to the domain layer |
+| 0008 | Bonus fulfilment API hand-coded rather than generated |
+| 0009 | Fulfilment count rules are check-then-act; race documented, not closed |
+
 ### Evidence of AI direction
 
 `docs/AI_COLLABORATION.md` records the workflow — brainstorm → spec → plan → TDD → mutation triage —
-and, candidly, **where the AI was wrong and how it was caught**. Two entries already exist from the
-design session: recommending replacement of the provided OpenAPI generator (corrected to
-`x-codegen-annotations` within the Quarkus lifecycle), and reporting `quarkus-mapstruct` as
-non-existent when the Maven query was simply malformed. A record of the machine being corrected is
-stronger evidence of competent direction than a clean narrative would be.
+and, candidly, **where the AI was wrong and how it was caught**. Three entries already exist from
+the design session:
+
+1. Recommending replacement of the provided OpenAPI generator, corrected to staying inside the
+   Quarkus codegen lifecycle.
+2. Reporting `io.quarkiverse.mapstruct:quarkus-mapstruct` as non-existent when the Maven Central
+   query was simply malformed.
+3. Asserting `x-codegen-annotations` as a working mechanism for field constraints without having
+   executed it — corrected by being told to test the premise, which disproved it.
+
+Each was caught by a human challenging a claim rather than accepting it, and in the third case the
+challenge produced the experiment that became the substance of the Question 2 answer. A record of
+the machine being corrected is stronger evidence of competent direction than a clean narrative.
 
 ---
 
@@ -359,14 +529,29 @@ English.
 claims.** Where experience would normally be cited, the answer instead reasons from the concrete
 situation in front of it. This is a deliberate constraint agreed during design.
 
+Scenario 1 of the case study explicitly invites "previous experiences that you have". The answer
+must **visibly substitute** for that rather than appear to have skipped the prompt — opening by
+reasoning from the failure modes the domain actually exhibits, so the omission reads as a choice
+rather than an oversight.
+
 - **Q1 — persistence strategies.** The codebase genuinely mixes three: active-record Panache
   (`Store`), Panache repository (`ProductRepository`), and a hexagonal port (`WarehouseStore`).
   Position: refactor by risk, not for symmetry — demonstrated in the diff. Includes the concrete
   recommendation that `drop-and-create` + `import.sql` must become versioned migrations before
   production.
-- **Q2 — contract-first versus code-first.** Answered first-hand from §5: the generator's actual
-  capabilities, driving constraints from the YAML, and the discovery that the shipped `@NotNull` was
-  inert.
+- **Q2 — contract-first versus code-first.** Answered first-hand from §5 and §7: what the shipped
+  generator can and cannot express (measured, with the configuration matrix), the discovery that the
+  shipped `@NotNull` was inert, adding 409 to the contract *before* the code returned it, and
+  deliberately hand-coding the bonus API to show that the choice is per-consumer rather than
+  per-codebase.
+
+  This is also where the delete-propagation scope decision from §6 is documented:
+
+  > The legacy gateway exposes no delete operation, so `DELETE /store/{id}` leaves an orphan record
+  > in the legacy register. Closing this would require either a change to the legacy contract
+  > (outside my control) or an outbox with periodic reconciliation to flag records without a
+  > counterpart. I scoped it out and applied the post-commit guarantee only to the operations the
+  > gateway supports, rather than extending provided code to make the problem disappear.
 - **Q3 — test prioritisation.** Answered from §8: the pyramid, why the domain layer carries the
   business-rule coverage, and why mutation score was chosen over line coverage.
 
@@ -382,6 +567,8 @@ dating, and the transactional atomicity of replace.
 | Risk | Mitigation |
 |---|---|
 | Local JDK default is 25; Quarkus 3.13 targets 17/21 | Build with JDK 21 (verified: `BUILD SUCCESS`, `release 17`). CI pins Temurin 21. |
-| `x-codegen-annotations` placement not yet exercised end to end | Verified present in the codegen library and read by `visitSchema`; confirm empirically with a real build as the first implementation step, before depending on it. |
-| `@QuarkusIntegrationTest` needs a packaged app plus a database | Runs under `verify` with Dev Services; confirm in CI early rather than at the end. |
-| Mutation threshold too aggressive for the time budget | Start at 85%, triage survivors, adjust the threshold consciously and record the final number. |
+| ~~`x-codegen-annotations` not yet exercised~~ | **Resolved by experiment** (§5). The mechanism does not work for field constraints; the design no longer depends on it. |
+| Adding `quarkus-hibernate-validator` throws at startup | Caused by the redeclared `@NotNull` (defect 2.2.10). A codebase-wide grep confirms only two sites, both in `WarehouseResourceImpl`. Remove them in the same commit that adds the dependency, and start the app once to confirm. |
+| `@QuarkusIntegrationTest` needs a packaged app, a database, **and Failsafe** | Failsafe added to the default build (defect 2.2.11). Confirm the IT actually executes by watching for its output in the `verify` log — a silent skip looks identical to a pass. |
+| Mutation threshold too aggressive for the time budget | Start at 85%, triage survivors, and record the achieved score honestly rather than lowering the bar to meet it. Triage is explicitly droppable (§8). |
+| Generator upgrade appears attractive later | 2.9.0 does not compile in this project without `quarkus-smallrye-openapi`, and still emits no field constraints (§5). Recorded so the option is not retried blind. |
