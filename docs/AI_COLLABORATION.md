@@ -72,6 +72,32 @@ The pattern in all three: the assistant is fast and thorough at gathering eviden
 over-trusting a chain of inference that it has not executed. The correction in each case was to
 demand the experiment.
 
+## What mutation testing caught that a green build did not
+
+The domain suite was green, and every rule had a test. PIT then reported **84%** — 44 mutants, 7
+alive. Each survivor is a sentence the tests could not finish.
+
+| Surviving mutant | What it proved was untested |
+|---|---|
+| `stock < 0` → `stock <= 0` | Nothing ever created a warehouse with **zero stock** — the state every new warehouse starts in |
+| `stock > capacity` → `>=` | Nothing ever created a **full** warehouse, so "stock may equal capacity" was an assumption, not a rule |
+| capacity `< previous.stock` → `<=` | Same boundary on replacement: a successor sized exactly to the stock it inherits |
+| location filter → always `true` | Every location test used **one** location, so "limits are per location" was never actually asserted |
+| `maxCapacity - used` → `+` | The remaining-capacity figure in the error message was never read by anyone |
+| `requireText(location)` removed | A blank location still failed — via the resolver, with the message "location    does not exist". Two different client mistakes collapsed into one useless sentence |
+| `warehouseStore.update(...)` removed | The in-memory double holds warehouses by reference, so archiving was visible whether or not anything was persisted. Against a database it would not be |
+
+Five were missing boundary cases, one was a message nobody checked, and the last was a defect in the
+**test double** rather than in the tests: holding objects by reference made persistence unobservable,
+so the double now counts the calls the database would have needed. After the triage: **44 mutants,
+44 killed, 100%, no survivors.**
+
+No test was deleted. That was the outcome worth reporting either way — the technique's payoff is
+usually a test that asserts nothing, and here it was instead six rules that were only half-asserted
+plus a double that lied. Line coverage was 99% before the triage and 99% after it; it moved by
+nothing while the suite got materially stronger, which is the whole argument for measuring mutants
+instead of lines.
+
 ## Why the skill files are committed
 
 `.agents/skills/` and `skills-lock.json` are committed **on purpose**, not by accident.
