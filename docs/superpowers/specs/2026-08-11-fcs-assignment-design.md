@@ -565,12 +565,21 @@ manufactured 85%.
 │  ├─ CODE_ASSIGNMENT.md      untouched
 │  ├─ QUESTIONS.md            answered in place
 │  └─ src/…
-├─ .agents/skills/            committed — evidence of the configured AI workflow
-└─ skills-lock.json
+├─ .agents/skills/            committed on purpose (see below)
+├─ .claude/skills/            relative symlinks into .agents/, stored by git as mode 120000
+└─ skills-lock.json           pins the skills by content hash
 ```
 
 `CODE_ASSIGNMENT.md`, `BRIEFING.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md` and `LICENSE` stay
-byte-identical to the originals.
+byte-identical to the originals, as does `src/main/resources/application.properties` (§8).
+
+**The skill files are committed deliberately.** `.agents/skills/` and `skills-lock.json` are the
+actual configuration that drove this work, pinned by content hash. Committing them lets a reviewer
+clone the repository and inspect the working stack that produced the result without fetching
+anything else or taking the narrative on trust. They are third-party files vendored unmodified from
+`obra/superpowers` (MIT), included as reproducibility evidence and attributed as not the author's
+work. The rationale is stated in `docs/AI_COLLABORATION.md` so it reads as intent rather than as
+stray files left in a repo.
 
 ### History
 
