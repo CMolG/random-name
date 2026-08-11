@@ -3,6 +3,7 @@ package com.fulfilment.application.monolith.warehouses.domain.usecases;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fulfilment.application.monolith.warehouses.domain.exceptions.ClientSuppliedIdException;
 import com.fulfilment.application.monolith.warehouses.domain.exceptions.DuplicateBusinessUnitCodeException;
@@ -64,9 +65,27 @@ class CreateWarehouseUseCaseTest {
 
   @Test
   void rejectsAnUnknownLocation() {
-    assertThrows(
-        InvalidWarehouseDataException.class,
-        () -> useCase.create(warehouse("MWH.100", "ATLANTIS-001", 10, 1)));
+    var thrown =
+        assertThrows(
+            InvalidWarehouseDataException.class,
+            () -> useCase.create(warehouse("MWH.100", "ATLANTIS-001", 10, 1)));
+
+    assertTrue(thrown.getMessage().contains("does not exist"), thrown.getMessage());
+  }
+
+  /**
+   * A missing location and an unknown one are different client mistakes and must not collapse into
+   * one message: without its own check, a blank location reaches the resolver and is reported as
+   * "location    does not exist", which tells the caller nothing useful.
+   */
+  @Test
+  void reportsAMissingLocationDifferentlyFromAnUnknownOne() {
+    var thrown =
+        assertThrows(
+            InvalidWarehouseDataException.class,
+            () -> useCase.create(warehouse("MWH.100", "   ", 10, 1)));
+
+    assertTrue(thrown.getMessage().contains("must be provided"), thrown.getMessage());
   }
 
   @Test
@@ -84,9 +103,13 @@ class CreateWarehouseUseCaseTest {
     // AMSTERDAM-001: max 5 warehouses, max capacity 100
     store.given("MWH.300", "AMSTERDAM-001", 90, 10);
 
-    assertThrows(
-        InvalidWarehouseDataException.class,
-        () -> useCase.create(warehouse("MWH.301", "AMSTERDAM-001", 11, 1)));
+    var thrown =
+        assertThrows(
+            InvalidWarehouseDataException.class,
+            () -> useCase.create(warehouse("MWH.301", "AMSTERDAM-001", 11, 1)));
+
+    // 100 max - 90 used = 10 remaining; the figure the client is told has to be the remainder
+    assertTrue(thrown.getMessage().contains("remaining capacity of 10"), thrown.getMessage());
   }
 
   @Test
@@ -94,6 +117,33 @@ class CreateWarehouseUseCaseTest {
     store.given("MWH.300", "AMSTERDAM-001", 90, 10);
 
     useCase.create(warehouse("MWH.301", "AMSTERDAM-001", 10, 1));
+
+    assertEquals(2, store.getAll().size());
+  }
+
+  /** A brand-new warehouse holds nothing. Zero stock is the ordinary case, not an error. */
+  @Test
+  void acceptsAWarehouseWithZeroStock() {
+    useCase.create(warehouse("MWH.100", "AMSTERDAM-001", 10, 0));
+
+    assertEquals(1, store.getAll().size());
+  }
+
+  /** A full warehouse is legal; only stock beyond capacity is not. */
+  @Test
+  void acceptsStockThatExactlyEqualsCapacity() {
+    useCase.create(warehouse("MWH.100", "AMSTERDAM-001", 10, 10));
+
+    assertEquals(1, store.getAll().size());
+  }
+
+  /** Location limits are per location: warehouses elsewhere must not count towards them. */
+  @Test
+  void warehousesAtOtherLocationsDoNotCountTowardsALocationLimit() {
+    store.given("MWH.900", "TILBURG-001", 30, 5);
+
+    // HELMOND-001 allows exactly 1 warehouse of at most 45 capacity, and holds none
+    useCase.create(warehouse("MWH.901", "HELMOND-001", 45, 5));
 
     assertEquals(2, store.getAll().size());
   }

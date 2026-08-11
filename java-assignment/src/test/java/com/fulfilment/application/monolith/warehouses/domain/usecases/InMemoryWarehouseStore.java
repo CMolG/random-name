@@ -12,6 +12,15 @@ public class InMemoryWarehouseStore implements WarehouseStore {
   private final List<Warehouse> warehouses = new ArrayList<>();
   private final AtomicLong sequence = new AtomicLong(0);
 
+  /**
+   * How many times a change was handed to the store to persist.
+   *
+   * <p>This double holds warehouses by reference, so a mutation is visible whether or not anyone
+   * calls update. Against a database it is not: skipping update loses the change entirely. Counting
+   * the calls is what lets a test tell those two worlds apart.
+   */
+  private int updateCalls;
+
   @Override
   public List<Warehouse> getAll() {
     return warehouses.stream().filter(w -> w.archivedAt == null).toList();
@@ -25,7 +34,13 @@ public class InMemoryWarehouseStore implements WarehouseStore {
 
   @Override
   public void update(Warehouse warehouse) {
-    // stored by reference; mutations are already visible
+    // stored by reference; mutations are already visible, so only the call itself is recorded
+    updateCalls++;
+  }
+
+  /** How many times {@link #update} was called. */
+  public int updateCalls() {
+    return updateCalls;
   }
 
   @Override

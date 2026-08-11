@@ -61,6 +61,16 @@ class ReplaceWarehouseUseCaseTest {
         () -> useCase.replace(successor("MWH.100", "AMSTERDAM-001", 20, 30)));
   }
 
+  /** Accommodating the stock means holding it exactly, not strictly exceeding it. */
+  @Test
+  void successorCapacityMayEqualThePredecessorStock() {
+    store.given("MWH.100", "AMSTERDAM-001", 50, 30);
+
+    useCase.replace(successor("MWH.100", "AMSTERDAM-001", 30, 30));
+
+    assertEquals(30, store.findByBusinessUnitCode("MWH.100").capacity);
+  }
+
   @Test
   void successorStockMustMatchThePredecessorStock() {
     store.given("MWH.100", "AMSTERDAM-001", 50, 30);

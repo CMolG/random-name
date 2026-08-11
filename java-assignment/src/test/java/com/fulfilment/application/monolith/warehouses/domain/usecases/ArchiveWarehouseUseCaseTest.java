@@ -1,5 +1,6 @@
 package com.fulfilment.application.monolith.warehouses.domain.usecases;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -30,6 +31,8 @@ class ArchiveWarehouseUseCaseTest {
     assertNotNull(warehouse.archivedAt);
     assertTrue(store.getAll().isEmpty());
     assertNull(store.findByBusinessUnitCode("MWH.100"));
+    assertEquals(
+        1, store.updateCalls(), "the archival must be handed to the store, not only to the object");
   }
 
   @Test
