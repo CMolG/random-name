@@ -126,19 +126,32 @@ with or without the flag. What is never emitted is @Valid on that parameter — 
 if field constraints did appear on the bean, nothing would cascade into them. And I
 cannot add @Valid myself, because Jakarta Validation prohibits adding @Valid or
 parameter constraints on an overriding method. The generator can express "the body must
-be present" and cannot express "the body's fields must be valid", and no configuration
-I could find changes that.
+be present" and cannot express "the body's fields must be valid".
+
+The reason is a version one, and it comes from the extension's release history rather
+than from anything measured here. Apicurio-based bean validation was added to the
+extension in apicurio-codegen 1.2.5.Final, in the release line aligned with Quarkus
+3.24/3.25. This project is pinned to Quarkus 3.13, so the property has no implementation
+to reach — which is why setting it produces byte-identical generated sources and no
+unrecognised-property warning. Upgrading the extension to obtain field constraints was
+out of scope for this exercise; the pinned platform version is part of the given code.
+
+That distinction matters for how the finding should be read. The flag is not broken and
+it is not misspelled: it is a real capability that simply does not exist yet in the
+version this project is built on. "Configure it differently" was never going to work,
+and neither was "check the spelling" — which is precisely the kind of afternoon that
+gets lost when a build-time property is silently accepted by a version that cannot
+honour it.
 
 Two lessons from that, and they are the real cons. First, unknown codegen properties
-are ignored without warning: no error, no warning, no change in output. A
-misconfiguration is indistinguishable from a correctly configured no-op, and you find
-it only by diffing the generated source — which is exactly what almost nobody does. It
-is worth being precise about what that experiment proves and what it does not: it
-proves the flag has no effect on this artifact, not that some other spelling of it
-exists somewhere. Absence of an effect is not proof of absence of a mechanism, and I
-would say so rather than overclaim. Second, you inherit the generator's expressiveness,
-and its ceiling is lower than the spec's. What the contract can say and what the code
-will enforce are two different sets, and the gap is invisible.
+are ignored without warning: no error, no warning, no change in output. A property
+belonging to a later release line is indistinguishable, from inside the build, from one
+that is working — and you find out only by diffing the generated source or by reading
+the extension's history. Neither is anybody's first instinct. Second, you inherit the
+generator's expressiveness, and its ceiling is lower than the spec's, and it moves with
+the version you are pinned to. What the contract can say and what the code will enforce
+are two different sets, the gap is invisible, and it is not even constant across
+releases.
 
 That is why field-level rules live in the use cases in this codebase, next to the
 business rules they are inseparable from. A blank business unit code and a duplicate
