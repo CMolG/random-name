@@ -29,8 +29,22 @@ public class DbWarehouse {
 
   public DbWarehouse() {}
 
+  /** API -> database. Without it every write would have to reach into the entity field by field. */
+  public static DbWarehouse from(Warehouse warehouse) {
+    var db = new DbWarehouse();
+    db.id = warehouse.id;
+    db.businessUnitCode = warehouse.businessUnitCode;
+    db.location = warehouse.location;
+    db.capacity = warehouse.capacity;
+    db.stock = warehouse.stock;
+    db.createdAt = warehouse.createdAt;
+    db.archivedAt = warehouse.archivedAt;
+    return db;
+  }
+
   public Warehouse toWarehouse() {
     var warehouse = new Warehouse();
+    warehouse.id = this.id;
     warehouse.businessUnitCode = this.businessUnitCode;
     warehouse.location = this.location;
     warehouse.capacity = this.capacity;

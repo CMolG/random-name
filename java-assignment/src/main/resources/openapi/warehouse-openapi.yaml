@@ -36,6 +36,12 @@ paths:
         '400':
           description: Invalid request parameters
 
+        '409':
+          description: A warehouse with that business unit code already exists
+
+        '422':
+          description: Id was invalidly set on the request
+
   /warehouse/{id}:
     get:
       summary: Get a warehouse unit by ID
