@@ -67,7 +67,10 @@ incomplete", so finding them is part of the task.
    legacy register. See §6 — this is recorded as a scope decision, not fixed.
 5. **`pom.xml` sets conflicting compiler levels** — `maven.compiler.release=17` alongside
    `<source>11</source><target>11</target>` on `maven-compiler-plugin`. The build currently
-   succeeds on `release 17`, but the contradiction is latent.
+   succeeds on `release 17`, but the contradiction is latent. **Fixed**: the stale `source`/`target`
+   pair is removed, leaving `release` authoritative. The pom is being edited anyway for Failsafe,
+   hibernate-validator and PIT, so leaving a known contradiction in a file we are already touching
+   would be hard to defend.
 6. **`mvnw` is not executable** (mode `644`). Verified: `./mvnw` fails with
    `permission denied` locally, and would fail identically in CI.
 7. **Root `README.md` links to `assignment/CODE_ASSIGNMENT.md`**; the file lives at
@@ -157,6 +160,25 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 | Replace — accommodation | `new.capacity ≥ previous.stock` |
 | Replace — stock match | `new.stock == previous.stock` |
 
+### Field-level rules
+
+Because the generator cannot express these (§5), they are enforced in the use cases and are listed
+here explicitly so they are testable rather than left to an implementer's discretion. All of them
+raise `InvalidWarehouseDataException` (a `WarehouseDomainException`) mapping to **400**. None may
+surface as an NPE.
+
+| Field | Rule |
+|---|---|
+| `businessUnitCode` | non-null, non-blank after trim |
+| `location` | non-null, non-blank after trim (existence is then checked by `LocationResolver`) |
+| `capacity` | non-null, `> 0` — a warehouse with no capacity cannot hold the stock the same request declares |
+| `stock` | non-null, `>= 0` |
+| `id` on create | must be absent; a client-supplied id is **422**, matching the existing convention in `ProductResource` and `StoreResource` |
+
+No maximum lengths are enforced. The contract declares none, the database columns declare none, and
+inventing bounds the contract does not describe would be the same mistake as writing constraints the
+generator cannot honour.
+
 ### Operation semantics
 
 - **Create** — validate, set `createdAt = now()`, persist, return **201** via `@ResponseStatus(201)`.
@@ -190,6 +212,7 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 | 5 | `WarehouseStore.remove` | Implemented as archival, not hard delete. It is a leftover from a hard-delete model; adding a `DELETE` nothing calls would be worse than repurposing it honestly. |
 | 6 | Which store method does `ArchiveWarehouseUseCase` call? | `update`. The provided skeleton already calls `update`, archival is a field mutation on an existing row, and `remove` is its alias per decision 5. One archival path, not two. |
 | 7 | Who sets `createdAt`? | The create use case, at validation time, inside the transaction. Not the database, so the value is deterministic and assertable in tests. |
+| 8 | `WarehouseStore` has no lookup by numeric id, which decision 2 requires for `GET`/`DELETE /warehouse/{id}` | The **port gains `findById(Long)`**. `WarehouseResourceImpl` currently injects the concrete `WarehouseRepository`; reaching through it to `PanacheRepository.findById` would make the adapter depend on the implementation and quietly defeat the hexagon the rest of §3 maintains. The impl's field type changes to `WarehouseStore`. |
 
 ---
 
@@ -264,7 +287,7 @@ only if it reduces code substantially — and **rejected on the numbers**: four 
 lines versus ~30 with MapStruct plus build configuration and an extra extension. Roughly break-even.
 The genuine argument for it (`unmappedTargetPolicy = ERROR` catching the dropped-`id` defect at
 compile time) is a correctness argument, not a line-count one, and does not meet the criterion.
-Recorded in ADR-0005. Lombok is likewise not introduced: the entities are public-field POJOs and
+Recorded in ADR-0006. Lombok is likewise not introduced: the entities are public-field POJOs and
 Quarkus + Lombok + annotation processors is friction for no gain across four small classes.
 
 ### Error model
@@ -274,11 +297,18 @@ Quarkus + Lombok + annotation processors is friction for no gain across four sma
 **400**. A single `ExceptionMapper` translates them, emitting the same JSON error shape the existing
 `ErrorMapper` already produces so the API stays internally consistent.
 
-**409 must be added to `warehouse-openapi.yaml`.** The contract currently declares only 201 and 400
-for `POST /warehouse`, and only 200/400/404 for the replacement path. Returning a status the
-contract does not describe would contradict the claim that the YAML is authoritative. The contract
-changes first, then the code follows it — which is the whole point of working contract-first, and is
-worth stating in the Question 2 answer.
+**409 must be added to `warehouse-openapi.yaml`** on `POST /warehouse` only. That is the sole
+operation that can collide on business unit code: the replacement path *reuses* the code by design,
+so a duplicate there is not an error condition. The replacement path's existing 400 already covers
+its own violations. Returning a status the contract does not describe would contradict the claim
+that the YAML is authoritative — the contract changes first, then the code follows it, which is the
+whole point of working contract-first and is worth stating in the Question 2 answer.
+
+**Adding `quarkus-hibernate-validator` changes the error shape for null bodies.** Quarkus registers
+its own `ResteasyReactiveViolationExceptionMapper`, which emits a `ViolationReport` rather than the
+`{exceptionType, code, error}` shape used everywhere else in this API. Since §5 claims internal
+consistency, a mapper for `ResteasyReactiveViolationException` producing the house shape is part of
+this work, not an afterthought.
 
 ---
 
@@ -309,6 +339,11 @@ by swapping in a recording observer. That is the concrete artefact the Question 
 
 **`Operation` has exactly two members.** No `DELETE`: the gateway exposes no delete operation, so a
 discriminator with nothing behind it would be dead code.
+
+**The observer reconstructs a transient `Store` from the snapshot.** `LegacyStoreManagerGateway`'s
+signature is `(Store)` and the gateway stays byte-identical, so the observer builds a detached
+`Store` instance from the record's fields and passes that. Noting it here so it is not rediscovered
+mid-implementation and mistaken for a reason to abandon the snapshot.
 
 A rollback delivers nothing, which is the entire point of the task.
 
@@ -390,24 +425,82 @@ TDD on the domain, committed red → green → refactor so the history is itself
 | REST | `@QuarkusTest` + RestAssured | status codes, error shape, null-body rejection, post-commit sync ordering |
 | Integration | `@QuarkusIntegrationTest` (`WarehouseEndpointIT`, uncommented) | packaged application against a real database |
 
-### Making the integration test actually run
+### Making the integration test actually run — verified end to end
 
 Per defect 2.2.11, `maven-failsafe-plugin` must be added to the **default** build section, not left
 in the `native` profile. Without it `./mvnw verify` goes green while never executing the IT — a
 false pass on success criterion #2, on the one test that proves the archive-and-exclude behaviour.
 
-Two traps in the commented-out block have to be handled when uncommenting it:
+Adding Failsafe alone is not sufficient, and the reason was found by running it rather than by
+reasoning about it.
+
+**Dev Services cannot start a database on the development machine.** Docker Desktop 29.2.0 answers
+`/info` with HTTP 400 to the `docker-java` client bundled with Quarkus 3.13.3, so every Testcontainers
+strategy fails — `EnvironmentAndSystemPropertyClientProviderStrategy`,
+`UnixSocketClientProviderStrategy` and `DockerDesktopClientProviderStrategy` alike — and
+`DevServicesDatasourceProcessor` aborts the build. The `docker` CLI works normally; this is a
+client/API-version incompatibility, not a broken Docker install. `@QuarkusTest` therefore cannot run
+at all in the default configuration, which would make TDD impossible before a line was written.
+
+**Resolution, measured green:** run a real PostgreSQL on port 15432 with the `quarkus_test`
+credentials — exactly what the provided `java-assignment/README.md` already instructs — and point
+the test profile at it with Dev Services disabled. `./mvnw verify` then reports:
+
+```
+Tests run: 2, Failures: 0, Errors: 0   (surefire — ProductEndpointTest, LocationGatewayTest)
+Tests run: 2, Failures: 0, Errors: 0   (failsafe — WarehouseEndpointIT)
+BUILD SUCCESS
+```
+
+The test configuration goes in **`src/test/resources/application.properties`**, which leaves
+`src/main/resources/application.properties` byte-identical to the baseline. This was verified: the
+file diffs clean against `baseline` and the build is still green.
+
+```properties
+# src/test/resources/application.properties  (new file; main config untouched)
+quarkus.datasource.db-kind=postgresql
+quarkus.datasource.username=quarkus_test
+quarkus.datasource.password=quarkus_test
+quarkus.datasource.jdbc.url=jdbc:postgresql://localhost:15432/quarkus_test
+quarkus.devservices.enabled=false
+```
+
+Two properties of this arrangement are worth noting. The `@QuarkusIntegrationTest` runs the packaged
+application under the **prod** profile, and the provided `%prod.quarkus.datasource.jdbc.url` already
+points at `localhost:15432` with exactly these credentials — so the IT connects through
+**completely unmodified** provided configuration. And the whole class of Testcontainers/Docker-version
+flakiness disappears from the build, on every machine.
+
+The database comes from a `docker-compose.yml` for local use and a service container in CI, so one
+documented command works in both places. The trade-off — losing Dev Services' zero-configuration
+convenience — is recorded in ADR-0010 along with the measurement that forced it.
+
+Three traps in the commented-out block have to be handled when uncommenting it:
 
 - **Shared database state.** `testSimpleCheckingArchivingWarehouses` archives id 1; if it runs
   before `testSimpleListWarehouses`, that test's assertion on `MWH.001` fails. The archiving test
   will therefore create and archive **its own** warehouse rather than mutating seed row 1, so the
   two tests are order-independent. Ordering annotations would mask the coupling rather than remove
   it.
+- **Assert on the business unit code, never the location.** The commented block asserts
+  `not(containsString("ZWOLLE-001"))`. Locations are shared between warehouses — `AMSTERDAM-001`
+  carries both seed `MWH.012` and anything a test creates there — so a location-based absence
+  assertion is wrong the moment a second warehouse shares the location. Business unit codes are
+  unique among active warehouses, which is exactly what the assertion needs. The location the test
+  creates in must also have spare warehouse count and spare capacity per §4.
 - **Missing import.** The commented block uses `not(...)`; the file imports only `containsString`.
+
+`LocationGatewayTest` is likewise commented out and is the test for Task 1. It is restored as the
+first red test of the TDD sequence.
+
+`@QuarkusTest` classes share one database too: `ProductEndpointTest` already deletes product 1, and
+new store and warehouse test classes will run against the same schema. Each new test class creates
+the rows it asserts on rather than depending on seed data, except where a test is specifically about
+the seeded fixtures.
 
 ### Named store-side tests
 
-Two cases from §6 are called out because they are the ones a plausible-but-wrong implementation
+Three cases from §6 are called out because they are the ones a plausible-but-wrong implementation
 passes silently:
 
 - `PATCH {"name":"x"}` against a store with stock 5 leaves stock at **5** (catches the wipe).
@@ -446,7 +539,8 @@ manufactured 85%.
 ```
 /
 ├─ README.md                  rewritten as the submission front door
-├─ .gitignore                 new
+├─ .gitignore                 added in the baseline commit
+├─ docker-compose.yml         new — PostgreSQL on 15432 for tests
 ├─ .github/workflows/ci.yml   new
 ├─ docs/
 │  ├─ adr/                    numbered decision records
@@ -478,11 +572,18 @@ request, and the issue answered and closed on merge.
 
 `ubuntu-latest`, Temurin 21, cached Maven.
 
-- **build** — `./mvnw -B verify`. Quarkus Dev Services provides PostgreSQL via Docker, which GitHub
-  Actions supplies.
-- **mutation** — `./mvnw -Pmutation …` publishing the PIT HTML report as an artifact.
+- **build** — a `postgres` service container published on **15432** with the `quarkus_test`
+  credentials, then `./mvnw -B verify`. Not Dev Services: §8 records why, and a service container
+  behaves identically on every machine.
+- **mutation** — `./mvnw -Pmutation …` publishing the PIT HTML report as an artifact. Needs no
+  database; the domain tests are plain JUnit.
 
 `mvnw` must be made executable (defect 2.2.6) before CI can work at all.
+
+CI must also **assert that the integration test actually ran**, not merely that the build passed —
+defect 2.2.11 is precisely a green build that silently skipped it. Failing the job when
+`WarehouseEndpointIT` is absent from the Failsafe reports costs one step and closes the hole
+permanently.
 
 **No JaCoCo.** Mutation score strictly dominates line coverage as a quality signal; publishing both
 invites a reviewer to anchor on the weaker number. One strong metric, defended.
@@ -500,6 +601,7 @@ invites a reviewer to anchor on the weaker number. One strong metric, defended.
 | 0007 | Mutation testing scoped to the domain layer |
 | 0008 | Bonus fulfilment API hand-coded rather than generated |
 | 0009 | Fulfilment count rules are check-then-act; race documented, not closed |
+| 0010 | Dev Services disabled in favour of a real PostgreSQL on 15432, forced by a measured Docker Desktop / `docker-java` incompatibility |
 
 ### Evidence of AI direction
 
@@ -569,6 +671,7 @@ dating, and the transactional atomicity of replace.
 | Local JDK default is 25; Quarkus 3.13 targets 17/21 | Build with JDK 21 (verified: `BUILD SUCCESS`, `release 17`). CI pins Temurin 21. |
 | ~~`x-codegen-annotations` not yet exercised~~ | **Resolved by experiment** (§5). The mechanism does not work for field constraints; the design no longer depends on it. |
 | Adding `quarkus-hibernate-validator` throws at startup | Caused by the redeclared `@NotNull` (defect 2.2.10). A codebase-wide grep confirms only two sites, both in `WarehouseResourceImpl`. Remove them in the same commit that adds the dependency, and start the app once to confirm. |
-| `@QuarkusIntegrationTest` needs a packaged app, a database, **and Failsafe** | Failsafe added to the default build (defect 2.2.11). Confirm the IT actually executes by watching for its output in the `verify` log — a silent skip looks identical to a pass. |
+| `@QuarkusIntegrationTest` needs a packaged app, a database, **and Failsafe** | **Resolved and measured** (§8): Failsafe in the default build, real PostgreSQL on 15432, Dev Services off. `./mvnw verify` runs all four tests and reports `BUILD SUCCESS`. CI additionally asserts the IT appears in the Failsafe reports, since a silent skip looks identical to a pass. |
+| Dev Services unusable locally (Docker Desktop 29.2.0 vs bundled `docker-java`) | Root-caused by running it, not inferred (§8). Removed from the design entirely rather than worked around per-machine. |
 | Mutation threshold too aggressive for the time budget | Start at 85%, triage survivors, and record the achieved score honestly rather than lowering the bar to meet it. Triage is explicitly droppable (§8). |
 | Generator upgrade appears attractive later | 2.9.0 does not compile in this project without `quarkus-smallrye-openapi`, and still emits no field constraints (§5). Recorded so the option is not retried blind. |
