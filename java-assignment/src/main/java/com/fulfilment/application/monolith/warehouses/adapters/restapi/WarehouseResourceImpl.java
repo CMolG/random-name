@@ -5,7 +5,6 @@ import com.warehouse.api.WarehouseResource;
 import com.warehouse.api.beans.Warehouse;
 import jakarta.enterprise.context.RequestScoped;
 import jakarta.inject.Inject;
-import jakarta.validation.constraints.NotNull;
 import java.util.List;
 
 @RequestScoped
@@ -19,7 +18,7 @@ public class WarehouseResourceImpl implements WarehouseResource {
   }
 
   @Override
-  public Warehouse createANewWarehouseUnit(@NotNull Warehouse data) {
+  public Warehouse createANewWarehouseUnit(Warehouse data) {
     // TODO Auto-generated method stub
     throw new UnsupportedOperationException("Unimplemented method 'createANewWarehouseUnit'");
   }
@@ -38,7 +37,7 @@ public class WarehouseResourceImpl implements WarehouseResource {
 
   @Override
   public Warehouse replaceTheCurrentActiveWarehouse(
-      String businessUnitCode, @NotNull Warehouse data) {
+      String businessUnitCode, Warehouse data) {
     // TODO Auto-generated method stub
     throw new UnsupportedOperationException(
         "Unimplemented method 'replaceTheCurrentActiveWarehouse'");
