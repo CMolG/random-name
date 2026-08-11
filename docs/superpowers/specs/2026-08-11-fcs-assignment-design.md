@@ -187,9 +187,13 @@ generator cannot honour.
 
 ### Operation semantics
 
-- **Create** — validate, set `createdAt = now()`, persist, return **201** via `@ResponseStatus(201)`.
-  The generated interface returns `Warehouse`, not `Response`, so the annotation is the mechanism;
-  a `ContainerResponseFilter` would be a heavier way to reach the same result.
+- **Create** — validate, set `createdAt = now()`, persist, return **201**. The generated interface
+  returns `Warehouse`, not `Response`, so the status comes from `@ResponseStatus(201)` — **plus a
+  redundant-looking `@POST` on the implementing method.** Measured during planning: `@ResponseStatus`
+  is honoured only on a method carrying its own JAX-RS method annotation. On a method whose HTTP
+  metadata is inherited from the generated interface it is silently ignored and the response is 200,
+  with no error anywhere. A `ContainerResponseFilter` also works and is what other submissions
+  reached for, but it is heavier for the same result.
 - **Get by id** — numeric id, active only, else **404**.
 - **List** — active only.
 - **Archive** — soft state change, `archivedAt = now()`. Archiving an already-archived or unknown
@@ -218,7 +222,7 @@ generator cannot honour.
 | 5 | `WarehouseStore.remove` | Implemented as archival, not hard delete. It is a leftover from a hard-delete model; adding a `DELETE` nothing calls would be worse than repurposing it honestly. |
 | 6 | Which store method does `ArchiveWarehouseUseCase` call? | `update`. The provided skeleton already calls `update`, archival is a field mutation on an existing row, and `remove` is its alias per decision 5. One archival path, not two. |
 | 7 | Who sets `createdAt`? | The create use case, at validation time, inside the transaction. Not the database, so the value is deterministic and assertable in tests. |
-| 8 | `WarehouseStore` has no lookup by numeric id, which decision 2 requires for `GET`/`DELETE /warehouse/{id}` | The **port gains `findById(Long)`**. `WarehouseResourceImpl` currently injects the concrete `WarehouseRepository`; reaching through it to `PanacheRepository.findById` would make the adapter depend on the implementation and quietly defeat the hexagon the rest of §3 maintains. The impl's field type changes to `WarehouseStore`. |
+| 8 | `WarehouseStore` has no lookup by numeric id, which decision 2 requires for `GET`/`DELETE /warehouse/{id}` | The **port gains `findActiveById(Long)`**. `WarehouseResourceImpl` currently injects the concrete `WarehouseRepository`; reaching through it to `PanacheRepository.findById` would make the adapter depend on the implementation and quietly defeat the hexagon the rest of §3 maintains. The impl's field type changes to `WarehouseStore`. **Not** `findById`: `WarehouseRepository` also implements `PanacheRepository<DbWarehouse>`, whose `findById(Long)` returns `DbWarehouse`, and two methods with the same erasure and incompatible return types is a hard compile error — verified during planning. The name also states the invariant: archived rows are never returned. |
 | 9 | `businessUnitCode` appears in **both** the replacement path and the request body | **The path is authoritative, and a mismatch is 400.** Silently preferring one would hide a client bug in an operation whose entire purpose is to preserve a specific business unit code. An absent body value is taken from the path. |
 | 10 | The API bean's `id` is `String`; the column is `Long` | `String.valueOf` outbound; inbound parse failures fall into decision 3 (**404**, not a 500). |
 | 11 | Must a fulfilment association reference existing entities? | Yes — the warehouse must exist and be **active**, and the store and product must exist. A **404** naming the missing entity. Associating stock with an archived warehouse would silently corrupt exactly the history trail §2.3 and Scenario 5 are about. |
