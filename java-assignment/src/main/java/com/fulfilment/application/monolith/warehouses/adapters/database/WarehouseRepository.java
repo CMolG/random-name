@@ -37,4 +37,10 @@ public class WarehouseRepository implements WarehouseStore, PanacheRepository<Db
     // TODO Auto-generated method stub
     throw new UnsupportedOperationException("Unimplemented method 'findById'");
   }
+
+  @Override
+  public Warehouse findActiveById(Long id) {
+    // TODO Auto-generated method stub
+    throw new UnsupportedOperationException("Unimplemented method 'findActiveById'");
+  }
 }
