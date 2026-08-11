@@ -38,7 +38,8 @@ is stated in an ADR instead of built.
 
 | Location | State |
 |---|---|
-| `LocationGateway.resolveByIdentifier` | throws `UnsupportedOperationException` |
+| `LocationGateway.resolveByIdentifier` | throws `UnsupportedOperationException` — and the class carries **no bean-defining annotation**, so injecting `LocationResolver` fails at build time until `@ApplicationScoped` is added |
+| `WarehouseRepository.getAll` | **not stubbed, but wrong for the target behaviour**: it returns `listAll()`, archived rows included. §4 requires active-only, so this working method changes too — easy to skip precisely because it already compiles and runs |
 | `WarehouseRepository` — `create`, `update`, `remove`, `findByBusinessUnitCode` | all four throw |
 | `WarehouseResourceImpl` — `createANewWarehouseUnit`, `getAWarehouseUnitByID`, `archiveAWarehouseUnitByID`, `replaceTheCurrentActiveWarehouse` | all four throw |
 | `CreateWarehouseUseCase`, `ReplaceWarehouseUseCase`, `ArchiveWarehouseUseCase` | bodies are `// TODO` + a bare store call |
@@ -163,17 +164,22 @@ Derived from `CODE_ASSIGNMENT.md` and the field comments on `Location`.
 ### Field-level rules
 
 Because the generator cannot express these (§5), they are enforced in the use cases and are listed
-here explicitly so they are testable rather than left to an implementer's discretion. All of them
-raise `InvalidWarehouseDataException` (a `WarehouseDomainException`) mapping to **400**. None may
+here explicitly so they are testable rather than left to an implementer's discretion. None may
 surface as an NPE.
 
-| Field | Rule |
-|---|---|
-| `businessUnitCode` | non-null, non-blank after trim |
-| `location` | non-null, non-blank after trim (existence is then checked by `LocationResolver`) |
-| `capacity` | non-null, `> 0` — a warehouse with no capacity cannot hold the stock the same request declares |
-| `stock` | non-null, `>= 0` |
-| `id` on create | must be absent; a client-supplied id is **422**, matching the existing convention in `ProductResource` and `StoreResource` |
+| Field | Rule | Exception | Status |
+|---|---|---|---|
+| `businessUnitCode` | non-null, non-blank after trim | `InvalidWarehouseDataException` | 400 |
+| `location` | non-null, non-blank after trim (existence is then checked by `LocationResolver`) | `InvalidWarehouseDataException` | 400 |
+| `capacity` | non-null, `> 0` — a warehouse with no capacity cannot hold the stock the same request declares | `InvalidWarehouseDataException` | 400 |
+| `stock` | non-null, `>= 0` | `InvalidWarehouseDataException` | 400 |
+| `id` on create | must be absent | `ClientSuppliedIdException` | **422** |
+
+The client-supplied-id case keeps **422** for parity with `ProductResource` and `StoreResource`,
+which both already return 422 for exactly this. Consistency across the three resources is worth more
+than collapsing everything into one status, and the assignment's Question 1 is about precisely this
+kind of cross-resource coherence. It therefore needs its **own** exception type, and **422 is added
+to `POST /warehouse` in the YAML alongside 409** — the contract changes first, per §5.
 
 No maximum lengths are enforced. The contract declares none, the database columns declare none, and
 inventing bounds the contract does not describe would be the same mistake as writing constraints the
@@ -213,6 +219,9 @@ generator cannot honour.
 | 6 | Which store method does `ArchiveWarehouseUseCase` call? | `update`. The provided skeleton already calls `update`, archival is a field mutation on an existing row, and `remove` is its alias per decision 5. One archival path, not two. |
 | 7 | Who sets `createdAt`? | The create use case, at validation time, inside the transaction. Not the database, so the value is deterministic and assertable in tests. |
 | 8 | `WarehouseStore` has no lookup by numeric id, which decision 2 requires for `GET`/`DELETE /warehouse/{id}` | The **port gains `findById(Long)`**. `WarehouseResourceImpl` currently injects the concrete `WarehouseRepository`; reaching through it to `PanacheRepository.findById` would make the adapter depend on the implementation and quietly defeat the hexagon the rest of §3 maintains. The impl's field type changes to `WarehouseStore`. |
+| 9 | `businessUnitCode` appears in **both** the replacement path and the request body | **The path is authoritative, and a mismatch is 400.** Silently preferring one would hide a client bug in an operation whose entire purpose is to preserve a specific business unit code. An absent body value is taken from the path. |
+| 10 | The API bean's `id` is `String`; the column is `Long` | `String.valueOf` outbound; inbound parse failures fall into decision 3 (**404**, not a 500). |
+| 11 | Must a fulfilment association reference existing entities? | Yes — the warehouse must exist and be **active**, and the store and product must exist. A **404** naming the missing entity. Associating stock with an archived warehouse would silently corrupt exactly the history trail §2.3 and Scenario 5 are about. |
 
 ---
 
@@ -297,7 +306,7 @@ Quarkus + Lombok + annotation processors is friction for no gain across four sma
 **400**. A single `ExceptionMapper` translates them, emitting the same JSON error shape the existing
 `ErrorMapper` already produces so the API stays internally consistent.
 
-**409 must be added to `warehouse-openapi.yaml`** on `POST /warehouse` only. That is the sole
+**409 and 422 must be added to `warehouse-openapi.yaml`** on `POST /warehouse` only. That is the sole
 operation that can collide on business unit code: the replacement path *reuses* the code by design,
 so a duplicate there is not an error condition. The replacement path's existing 400 already covers
 its own violations. Returning a status the contract does not describe would contradict the claim
@@ -508,6 +517,11 @@ passes silently:
   heuristic — the case that distinguishes a correct implementation from a merely plausible one).
 - A rolled-back transaction produces **zero** gateway invocations; a committed one produces exactly
   one, carrying a non-null id.
+
+One warehouse-side REST test is singled out for the same reason: **`POST /warehouse` with a null
+body returns 400**. Fixes 2.2.9 and 2.2.10 pull in opposite directions — removing the redeclared
+`@NotNull` (2.2.10) is only safe if the constraint is still inherited from the generated interface
+and enforced (2.2.9). This test is the gate that proves one fix did not silently undo the other.
 
 ### Mutation testing
 
