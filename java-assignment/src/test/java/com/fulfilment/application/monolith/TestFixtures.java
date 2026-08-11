@@ -27,7 +27,9 @@ import io.quarkus.narayana.jta.QuarkusTransaction;
  * cache consistent.
  *
  * <p><b>Every fixture a test creates must use one of the prefixes below</b>, or it will not be
- * cleaned up and will leak into other test classes.
+ * cleaned up and will leak into other test classes. A prefix added here must also be added to the
+ * association filter in {@link #clean}: the correctness of the deletes does not rest on anyone
+ * reading this note, but the completeness of the cleanup still does.
  */
 public final class TestFixtures {
 
@@ -50,12 +52,18 @@ public final class TestFixtures {
     QuarkusTransaction.requiringNew()
         .run(
             () -> {
-              // associations first: they hold the foreign keys into everything below
+              // Associations first: they hold foreign keys into everything deleted below, so this
+              // filter must cover every prefix those deletions use. Anything missing here does not
+              // fail here — it fails as a foreign key violation on the delete that follows, in
+              // whichever test class happened to trigger the cleanup. Keep the two in step.
               associations
                   .list(
-                      "warehouse.businessUnitCode like ?1 or store.name like ?1"
-                          + " or product.name like ?1",
-                      FULFILMENT)
+                      "warehouse.businessUnitCode like ?1 or warehouse.businessUnitCode like ?2"
+                          + " or product.name like ?1"
+                          + " or store.name like ?1 or store.name like ?3",
+                      FULFILMENT,
+                      WAREHOUSE_ENDPOINT,
+                      STORE_SYNC)
                   .forEach(associations::delete);
 
               warehouses

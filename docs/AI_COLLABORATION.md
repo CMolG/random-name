@@ -58,19 +58,59 @@ accept any conclusion built on it. The experiment disproved the claim: property-
 are silently ignored, schema-level ones land on the class rather than the fields, and no
 configuration of the flag in any published version changes it.
 
-That correction is the most valuable thing in this repository. The resulting configuration matrix —
-four flag spellings across two extension versions, with the generated output captured each time — is
-now the evidence behind the answer to Question 2, which asks precisely about the trade-offs of
-generating code from an API contract. A first-hand measurement replaced an opinion.
+That correction produced the configuration matrix in the design spec — flag spellings across two
+extension versions, with the generated output captured each time — and it is where the answer to
+Question 2 began. Worth noting, in light of entry 4 below: that matrix was produced during design,
+and the assistant later reported it in the first person during implementation without re-running it.
+What Question 2 now rests on is the diff executed against this repository, not the inherited table.
+A first-hand measurement replaced an opinion, and then had to replace a remembered measurement too.
 
 **3. It reported a Maven artifact as non-existent when its own query was malformed.** It searched
 Maven Central for `io.quarkiverse.mapstruct:quarkus-mapstruct`, got zero results, and concluded the
 artifact did not exist. The artifact exists at version 1.1.0; the search API call was wrong. A tool
 returning nothing is not evidence of absence.
 
-The pattern in all three: the assistant is fast and thorough at gathering evidence, and prone to
-over-trusting a chain of inference that it has not executed. The correction in each case was to
-demand the experiment.
+**4. It reasoned its way around `use-bean-validation` for four exchanges rather than running one
+command.** This is the best example in the document, because it is the same failure as entry 2
+recurring after that failure had already been named, diagnosed and written down — and because
+nothing about it looked like a mistake from the inside.
+
+The question was whether `quarkus.openapi.generator.use-bean-validation=true` would put constraints
+on the generated bean's fields. What the assistant produced instead of an answer was a sequence of
+individually reasonable steps: it inherited the configuration matrix from its own design document
+and reported it in the first person, as though it had measured it. Asked directly, it conceded it
+had not run the experiment — and then argued that running it was unnecessary, because the generated
+interface carries no `@Valid`, so field constraints could not cascade even if they existed.
+
+That argument is true. It is also not an answer to the question that was asked, and the difference
+is easy to miss precisely because the reasoning is sound. Each inference was defensible; the
+conclusion was load-bearing for a written deliverable; and no step in the chain touched the
+artifact. I told it to stop arguing and run `./mvnw clean compile`.
+
+Three settings — the property file, `-D`, and the `.server.` prefix — produced generated sources
+**byte-identical** to the run without the flag, confirmed by `diff`. And the explanation turned out
+to be neither of the ones under debate. Apicurio-based bean validation was added to the extension
+in **apicurio-codegen 1.2.5.Final**, on the release line aligned with **Quarkus 3.24/3.25**. This
+project is pinned to **Quarkus 3.13**. The property has no implementation to reach, which is why it
+is accepted in silence and changes nothing. The flag was never misspelled or misconfigured; it did
+not exist yet. No amount of further reasoning about `@Valid` would have arrived there, because the
+answer was not in the code at all — it was in the extension's release history.
+
+That finding then propagated backwards through the documents: an earlier note claiming a version
+bump would not help had to be corrected, and the decision to keep `minLength`/`maxLength` out of the
+contract acquired an expiry date instead of reading as permanent. One command's output invalidated
+two written conclusions.
+
+The pattern in all four: the assistant is fast and thorough at gathering evidence, and prone to
+over-trusting a chain of inference that it has not executed. That is the shallow reading. The
+sharper one is entry 4 — **unexecuted inference compounds**. It does not announce itself as a guess.
+It gets restated with growing confidence, absorbed into documents as established fact, defended with
+further reasoning when challenged, and it survives exactly as long as nobody demands the experiment.
+Entry 2 was caught before it reached anything; entry 4 had already been written into a deliverable
+in the first person before anyone asked whether it had been run.
+
+The correction in every case was the same, and it was never cleverer reasoning: run it, and look at
+what comes out.
 
 ## What mutation testing caught that a green build did not
 
