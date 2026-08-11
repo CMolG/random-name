@@ -63,6 +63,16 @@ downward, moving Store's active-record calls behind a repository, because
 active-record makes an entity depend on its own persistence and that is what makes
 Store hardest to test in isolation. But that is a preference, and preferences are not
 a good enough reason to touch working code.
+
+One consistency decision worth naming, since it is the same instinct applied to the
+API surface rather than the persistence layer. The warehouse contract gained a 422
+for a request that carries an id the server owns, alongside the 409 for a duplicate
+business unit code. 422 rather than 400 because the body is well-formed and the
+violation is semantic, and specifically 422 because the provided StoreResource.create
+already answers the identical client mistake with 422 and the message "Id was
+invalidly set on request." — which the warehouse exception reuses verbatim. Matching a
+convention the codebase already establishes costs six lines of YAML and means a client
+does not have to learn two rules for one mistake.
 ```
 ----
 2. When it comes to API spec and endpoints handlers, we have an Open API yaml file for the `Warehouse` API from which we generate code, but for the other endpoints - `Product` and `Store` - we just coded directly everything. What would be your thoughts about what are the pros and cons of each approach and what would be your choice?
@@ -92,25 +102,43 @@ scoped SPI artifact, so at runtime there was no engine. The contract's promise w
 silently unenforced. That is the failure mode specific to generated code: it looks
 like enforcement, so nobody checks.
 
-Then I tried to push field constraints through the generator and could not. I ran
-seven configurations across two extension versions:
-required/minLength/maxLength in the YAML, use-bean-validation under three different
-property prefixes, the openapitools generator switch, property-level and schema-level
-x-codegen-annotations. None produced a single field annotation. Property-level
-x-codegen-annotations is silently ignored; schema-level lands on the class, where it
-is inert for fields. @Valid is never generated at all, and I cannot add it in my
-implementation either, because Jakarta Validation prohibits adding @Valid or parameter
-constraints on an overriding method. Extension 2.9.0 does not compile in this project,
-because it emits MicroProfile OpenAPI annotations and quarkus-smallrye-openapi is not a
-dependency, so "revisit after a version bump" would have been wrong advice. The
-capability lives in the client extension, which wraps a different generator entirely.
+Then I tried to push field constraints through the generator and could not. The
+obvious lever is use-bean-validation, and it does nothing here. Setting
+quarkus.openapi.generator.use-bean-validation=true in application.properties, and again
+as -D on the command line, and again under the .server. prefix, then running
+./mvnw clean compile each time, produces generated sources byte-identical to the run
+without it — verified with diff, not by reading the output. The bean is unchanged:
+
+    @JsonProperty("businessUnitCode")
+    private String businessUnitCode;
+
+    @JsonProperty("capacity")
+    private Integer capacity;
+
+No jakarta.validation import appears anywhere in it under any of those settings. The
+resource interface is the interesting half, because it does carry bean validation:
+
+    import jakarta.validation.constraints.NotNull;
+    Warehouse createANewWarehouseUnit(@NotNull Warehouse data);
+
+That @NotNull comes from requestBody: required: true in the contract, and it is emitted
+with or without the flag. What is never emitted is @Valid on that parameter — so even
+if field constraints did appear on the bean, nothing would cascade into them. And I
+cannot add @Valid myself, because Jakarta Validation prohibits adding @Valid or
+parameter constraints on an overriding method. The generator can express "the body must
+be present" and cannot express "the body's fields must be valid", and no configuration
+I could find changes that.
 
 Two lessons from that, and they are the real cons. First, unknown codegen properties
-are ignored without warning, so a misconfiguration produces no error and no output
-change: you find it only by diffing the generated source, which is exactly what almost
-nobody does. Second, you inherit the generator's expressiveness, and its ceiling is
-lower than the spec's. What the contract can say and what the code will enforce are
-two different sets, and the gap is invisible.
+are ignored without warning: no error, no warning, no change in output. A
+misconfiguration is indistinguishable from a correctly configured no-op, and you find
+it only by diffing the generated source — which is exactly what almost nobody does. It
+is worth being precise about what that experiment proves and what it does not: it
+proves the flag has no effect on this artifact, not that some other spelling of it
+exists somewhere. Absence of an effect is not proof of absence of a mechanism, and I
+would say so rather than overclaim. Second, you inherit the generator's expressiveness,
+and its ceiling is lower than the spec's. What the contract can say and what the code
+will enforce are two different sets, and the gap is invisible.
 
 That is why field-level rules live in the use cases in this codebase, next to the
 business rules they are inseparable from. A blank business unit code and a duplicate
@@ -195,6 +223,14 @@ Line coverage is the wrong metric and I did not measure it. It tells you a line
 executed, not that anything would have noticed if the line were wrong. This project
 uses mutation testing instead, and the numbers make the argument better than I can.
 
+The scope first, because a score means nothing without it. PIT runs against 44 mutants
+across the four rule-bearing domain classes — CreateWarehouseUseCase, ReplaceWarehouseUseCase,
+ArchiveWarehouseUseCase and LocationGateway. Adapters, entities, generated beans and
+container-driven tests are excluded, per ADR-0007: PIT rewrites bytecode and so does
+Quarkus, so aiming it at @QuarkusTest classes is unreliable. That is a deliberately
+narrow slice, chosen because it is where the business rules live, and it means the
+score describes the rule layer rather than the application.
+
 The domain suite was green and every rule had a test. PIT scored it 84 percent:
 44 mutants, 7 alive. Each survivor was a sentence the tests could not finish.
 
@@ -213,10 +249,20 @@ The domain suite was green and every rule had a test. PIT scored it 84 percent:
     warehouses by reference, so archiving was visible whether or not anything was
     persisted. Against a database it would not be. The double now counts the calls.
 
-Six new tests later: 44 mutants, 44 killed. Line coverage was 99 percent before the
-triage and 99 percent after. It moved by nothing while the suite became materially
-stronger, which is the entire argument for measuring mutants rather than lines in one
-number.
+Six new tests later: 44 mutants, 44 killed, across those four classes. Line coverage was
+99 percent before the triage and 99 percent after. It moved by nothing while the suite
+became materially stronger, which is the entire argument for measuring mutants rather
+than lines in one number.
+
+What that score does not cover, stated plainly: the fulfilment limits. FulfilmentService
+is outside the target classes because its tests need a container, so its three counting
+rules have no automated mutation coverage. I verified them by hand instead — flipping
+each >= to > and confirming exactly the three boundary tests failed — which is a one-off
+manual mutation, not something CI will repeat. The honest fix is to put the counting
+behind a port the way the warehouse use cases are, so it can be tested without Quarkus
+and brought into the same run. I would do that before adding any further rule to that
+service, and I would rather report a qualified 100 percent over a narrow slice than an
+unqualified one that invites the reader to discover the scope themselves.
 
 So, concretely, to keep it effective:
 

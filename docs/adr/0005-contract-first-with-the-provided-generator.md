@@ -23,12 +23,23 @@ body, but nothing enforced it: `hibernate-validator` appeared in the dependency 
 - **Replacing the generator with `openapi-generator-maven-plugin` was recommended and rejected.** It
   would leave the Quarkus codegen lifecycle and unpin the version from the platform.
 - **`x-codegen-annotations` was asserted as the mechanism for field constraints without being run.**
-  Challenged rather than accepted, then tested: property-level annotations are silently ignored, and
-  schema-level ones are applied to the class, where they are inert for fields. Seven configurations
-  across two extension versions produced field constraints in none of them, and `@Valid` is never
-  generated at all. Extension 2.9.0 additionally fails to compile here, because it emits MicroProfile
-  OpenAPI annotations and `quarkus-smallrye-openapi` is not a dependency — so "revisit after a
-  version bump" would have been inaccurate advice.
+  Challenged rather than accepted, then tested during design: property-level annotations are silently
+  ignored, and schema-level ones are applied to the class, where they are inert for fields. Extension
+  2.9.0 additionally fails to compile here, because it emits MicroProfile OpenAPI annotations and
+  `quarkus-smallrye-openapi` is not a dependency — so "revisit after a version bump" would have been
+  inaccurate advice.
+
+**Re-verified during implementation**, because a claim inherited from a design document is not
+evidence. `use-bean-validation=true` was set three ways — in `application.properties`, as `-D`, and
+under the `.server.` prefix — each followed by `./mvnw clean compile`. All three produce generated
+sources **byte-identical** to the run without it, confirmed by `diff`, with no warning about an
+unrecognised property. The bean carries no `jakarta.validation` import under any of them. The
+interface does carry `@NotNull` on the request-body parameter, from `required: true` in the
+contract, with or without the flag — and never `@Valid`, so nothing would cascade into field
+constraints even if they appeared.
+
+This bounds the claim honestly: the flag has no effect **on this artifact**. That is not proof that
+no mechanism exists anywhere, and the ADR does not assert one.
 
 ## Consequences
 

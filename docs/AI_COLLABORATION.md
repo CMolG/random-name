@@ -74,6 +74,11 @@ demand the experiment.
 
 ## What mutation testing caught that a green build did not
 
+Scope first, since the number is meaningless without it: **44 mutants across the four rule-bearing
+domain classes** — `CreateWarehouseUseCase` (26), `ReplaceWarehouseUseCase` (10), `LocationGateway`
+(5), `ArchiveWarehouseUseCase` (3). Adapters, entities, generated beans and container-driven tests
+are excluded per ADR-0007, with PIT's default mutator set.
+
 The domain suite was green, and every rule had a test. PIT then reported **84%** — 44 mutants, 7
 alive. Each survivor is a sentence the tests could not finish.
 
@@ -90,7 +95,13 @@ alive. Each survivor is a sentence the tests could not finish.
 Five were missing boundary cases, one was a message nobody checked, and the last was a defect in the
 **test double** rather than in the tests: holding objects by reference made persistence unobservable,
 so the double now counts the calls the database would have needed. After the triage: **44 mutants,
-44 killed, 100%, no survivors.**
+44 killed, no survivors — across those four classes.**
+
+The fulfilment limits sit outside that scope, because `FulfilmentService` needs a container to
+test. They were checked by a one-off manual mutation instead — flipping each `>=` to `>` and
+confirming exactly the three boundary tests failed — which is not something CI repeats. Putting the
+counting behind a port, as the warehouse use cases do, is what would bring it into the automated
+run; that is a design change rather than a configuration one, and it was not made.
 
 No test was deleted. That was the outcome worth reporting either way — the technique's payoff is
 usually a test that asserts nothing, and here it was instead six rules that were only half-asserted
