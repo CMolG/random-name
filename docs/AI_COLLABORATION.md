@@ -55,15 +55,13 @@ mechanism of its own.
 fields — without having run it.** The annotation extension is real and is documented; the inference
 that it applies at property level was not tested. I told it to test the premise before I would
 accept any conclusion built on it. The experiment disproved the claim: property-level annotations
-are silently ignored, schema-level ones land on the class rather than the fields, and no
-configuration of the flag in any published version changes it.
+are silently ignored, and schema-level ones land on the class rather than the fields.
 
-That correction produced the configuration matrix in the design spec — flag spellings across two
-extension versions, with the generated output captured each time — and it is where the answer to
-Question 2 began. Worth noting, in light of entry 4 below: that matrix was produced during design,
-and the assistant later reported it in the first person during implementation without re-running it.
-What Question 2 now rests on is the diff executed against this repository, not the inherited table.
-A first-hand measurement replaced an opinion, and then had to replace a remembered measurement too.
+That correction is the most valuable thing in this repository. What replaced the claim is smaller
+and actually executed: three flag spellings on the one extension version this project is pinned to,
+with the generated sources diffed byte-for-byte each time. That measurement is the evidence behind
+the answer to Question 2, which asks precisely about the trade-offs of generating code from an API
+contract. A first-hand measurement replaced an opinion.
 
 **3. It reported a Maven artifact as non-existent when its own query was malformed.** It searched
 Maven Central for `io.quarkiverse.mapstruct:quarkus-mapstruct`, got zero results, and concluded the
@@ -161,8 +159,16 @@ anything else or taking my word for what the process was.
 `.claude/skills/` contains relative symlinks into `.agents/skills/`; git stores them as symlinks
 (mode `120000`) and they resolve correctly after a clone.
 
-These files are third-party, vendored unmodified from [obra/superpowers](https://github.com/obra/superpowers)
-(MIT licensed). They are not my work and are included only as reproducibility evidence.
+These files are third-party, vendored unmodified from [obra/superpowers](https://github.com/obra/superpowers),
+copyright (c) 2025 Jesse Vincent and licensed MIT. They are not my work and are included only as
+reproducibility evidence.
+
+The licence travels with the copy, as MIT requires: the upstream text and copyright line are
+reproduced verbatim in [`.agents/skills/LICENSE`](../.agents/skills/LICENSE), which covers
+everything under that directory — and therefore `.claude/skills/` too, since those are symlinks into
+it. `skills-lock.json` pins each skill by **content hash rather than by upstream commit**, so there
+is no commit SHA to cite here; the hashes are the provenance, and they are what a reviewer can check
+the vendored files against.
 
 ## Verifying any of this
 
