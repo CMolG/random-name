@@ -1,0 +1,60 @@
+name: CI
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: quarkus_test
+          POSTGRES_PASSWORD: quarkus_test
+          POSTGRES_DB: quarkus_test
+        ports: ['15432:5432']
+        options: >-
+          --health-cmd "pg_isready -U quarkus_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21', cache: maven }
+      - name: Build and test
+        working-directory: java-assignment
+        run: ./mvnw -B verify
+
+      # A green build is not evidence the integration test ran: before this repository moved
+      # Failsafe into the default build, `mvn verify` passed while never executing WarehouseEndpointIT
+      # at all. Asserting the report exists closes that hole permanently.
+      - name: Assert the integration test actually ran
+        working-directory: java-assignment
+        run: |
+          test -f target/failsafe-reports/TEST-com.fulfilment.application.monolith.warehouses.adapters.restapi.WarehouseEndpointIT.xml \
+            || { echo "WarehouseEndpointIT did not run"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-reports
+          path: |
+            java-assignment/target/surefire-reports/
+            java-assignment/target/failsafe-reports/
+
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: '21', cache: maven }
+
+      # No database needed: the mutation profile targets the domain, whose tests are plain JUnit.
+      - name: Mutation coverage
+        working-directory: java-assignment
+        run: ./mvnw -B -Pmutation test-compile org.pitest:pitest-maven:mutationCoverage
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pit-report
+          path: java-assignment/target/pit-reports/
