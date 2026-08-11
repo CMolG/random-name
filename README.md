@@ -14,7 +14,7 @@ Java 21 and Docker are required. Quarkus 3.13 does not support JDK 25.
 
 ```sh
 docker compose up -d                 # PostgreSQL on 15432
-cd java-assignment && ./mvnw verify  # 68 tests + 2 integration tests
+cd java-assignment && ./mvnw verify  # 69 tests + 2 integration tests
 ```
 
 `./mvnw quarkus:dev` then serves the API on `http://localhost:8080`.
